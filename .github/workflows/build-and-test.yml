@@ -1,0 +1,400 @@
+name: Build & Test
+
+on:
+  repository_dispatch:
+    types: [build-and-test]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      SCHEME_NAME: ${{ secrets.SCHEME_NAME }}
+      BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
+      TEAM_ID: ${{ secrets.TEAM_ID }}
+
+    steps:
+      - name: Parse dispatch payload
+        run: |
+          set -euo pipefail
+
+          ref="$(jq -r '.client_payload.ref // .client_payload.branch // empty' "$GITHUB_EVENT_PATH")"
+          sha="$(jq -r '.client_payload.sha // .client_payload.commit_sha // empty' "$GITHUB_EVENT_PATH")"
+          project_id="$(jq -r '.client_payload.project_id // .client_payload.repository_id // empty' "$GITHUB_EVENT_PATH")"
+          merge_request_iid="$(jq -r '.client_payload.merge_request_iid // .client_payload.mr_iid // .client_payload.pr_number // empty' "$GITHUB_EVENT_PATH")"
+
+          if [ -z "$ref" ] || [ -z "$sha" ]; then
+            echo "Missing ref or sha in repository_dispatch payload"
+            exit 1
+          fi
+
+          if ! printf '%s' "$ref" | LC_ALL=C grep -Eq '^[A-Za-z0-9._/-]+$'; then
+            echo "Invalid ref format"
+            exit 1
+          fi
+
+          if ! printf '%s' "$sha" | LC_ALL=C grep -Eq '^[0-9a-f]{7,40}$'; then
+            echo "Invalid sha format"
+            exit 1
+          fi
+
+          if [ -n "$project_id" ] && ! printf '%s' "$project_id" | LC_ALL=C grep -Eq '^[0-9]+$'; then
+            echo "Invalid project_id format"
+            exit 1
+          fi
+
+          if [ -n "$merge_request_iid" ] && ! printf '%s' "$merge_request_iid" | LC_ALL=C grep -Eq '^[0-9]+$'; then
+            echo "Invalid merge_request_iid format"
+            exit 1
+          fi
+          # ref/sha are semi-public Git metadata, not secrets. Masking them would
+          # rewrite later shell expansions (for example git clone --branch "$REF")
+          # to ***, so protection here relies on heredoc env writes and suppressed
+          # git output instead.
+          if [ -n "$project_id" ]; then echo "::add-mask::$project_id"; fi
+          if [ -n "$merge_request_iid" ]; then echo "::add-mask::$merge_request_iid"; fi
+
+          {
+            echo "REF<<__REF_EOF__"
+            printf '%s' "$ref"
+            echo
+            echo "__REF_EOF__"
+          } >> "$GITHUB_ENV"
+          {
+            echo "SHA<<__SHA_EOF__"
+            printf '%s' "$sha"
+            echo
+            echo "__SHA_EOF__"
+          } >> "$GITHUB_ENV"
+          {
+            echo "PROJECT_ID<<__PROJECT_ID_EOF__"
+            printf '%s' "$project_id"
+            echo
+            echo "__PROJECT_ID_EOF__"
+          } >> "$GITHUB_ENV"
+          {
+            echo "MERGE_REQUEST_IID<<__MERGE_REQUEST_IID_EOF__"
+            printf '%s' "$merge_request_iid"
+            echo
+            echo "__MERGE_REQUEST_IID_EOF__"
+          } >> "$GITHUB_ENV"
+
+      - name: Clone source repository
+        env:
+          SOURCE_REPOSITORY_URL: ${{ secrets.SOURCE_REPOSITORY_URL }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$SOURCE_REPOSITORY_URL" ]; then
+            echo "SOURCE_REPOSITORY_URL secret is required"
+            exit 1
+          fi
+
+          echo "::add-mask::$SOURCE_REPOSITORY_URL"
+
+          git clone --depth 1 --branch "$REF" "$SOURCE_REPOSITORY_URL" source 2>/dev/null || {
+            git clone "$SOURCE_REPOSITORY_URL" source 2>/dev/null
+            cd source
+            git checkout --detach "$SHA" > /dev/null 2>&1
+          }
+
+      - name: Report pending status
+        env:
+          SCM_API_BASE_URL: ${{ secrets.SCM_API_BASE_URL }}
+          SCM_API_TOKEN: ${{ secrets.SCM_API_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$PROJECT_ID" ]; then
+            echo "No project id provided; skipping pending status update"
+            exit 0
+          fi
+
+          if [ -z "$SCM_API_BASE_URL" ] || [ -z "$SCM_API_TOKEN" ]; then
+            echo "SCM_API_BASE_URL and SCM_API_TOKEN secrets are required when project_id is provided"
+            exit 1
+          fi
+
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=running" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build and test in progress" --data-urlencode "name=ci/proxy")"
+
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "Pending status update failed with HTTP ${http_code}"
+            exit 1
+          fi
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+
+          xcode_path="$(find /Applications -maxdepth 1 -type d -name 'Xcode*.app' | LC_ALL=C sort | tail -1)"
+          if [ -z "$xcode_path" ]; then
+            echo "No Xcode installation found"
+            exit 1
+          fi
+
+          sudo xcode-select -s "$xcode_path/Contents/Developer"
+          xcodebuild -version
+
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData
+          key: ${{ runner.os }}-deriveddata-${{ hashFiles('source/**/*.swift', 'source/project.yml') }}
+          restore-keys: ${{ runner.os }}-deriveddata-
+
+      - name: Install XcodeGen
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          xcodegen --version
+
+      - name: Generate Xcode project
+        working-directory: source
+        run: |
+          set -euo pipefail
+          xcodegen generate > /dev/null 2>&1
+
+      - name: Find simulator
+        id: simulator
+        run: |
+          set -euo pipefail
+
+          simulator_id="$(xcrun simctl list devices available -j | python3 -c 'import json, sys; data = json.load(sys.stdin); devices = data.get("devices", {}); candidates = []; \
+          for runtime, runtime_devices in devices.items(): \
+              candidates.extend([(runtime, d.get("name", ""), d.get("udid", "")) for d in runtime_devices if d.get("isAvailable") and "iPhone" in d.get("name", "")]); \
+          print(candidates[0][2] if candidates else "")')"
+
+          if [ -z "$simulator_id" ]; then
+            echo "No available iPhone simulator found"
+            exit 1
+          fi
+
+          {
+            echo "id<<__SIM_ID_EOF__"
+            printf '%s' "$simulator_id"
+            echo
+            echo "__SIM_ID_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        working-directory: source
+        run: |
+          set -euo pipefail
+          set -o pipefail
+
+          if [ -z "$SCHEME_NAME" ]; then
+            echo "SCHEME_NAME secret is required"
+            exit 1
+          fi
+
+          xcodebuild build \
+            -scheme "$SCHEME_NAME" \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
+            -configuration Debug \
+            CODE_SIGN_IDENTITY= \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build.log > /dev/null
+
+      - name: Test
+        working-directory: source
+        run: |
+          set -euo pipefail
+          set -o pipefail
+
+          xcodebuild test \
+            -scheme "$SCHEME_NAME" \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
+            -configuration Debug \
+            CODE_SIGN_IDENTITY= \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            -resultBundlePath TestResults.xcresult \
+            2>&1 | tee test.log > /dev/null
+
+      - name: Sanitize log excerpt
+        if: always()
+        working-directory: source
+        run: |
+          set -euo pipefail
+
+          log_file=""
+          if [ -f test.log ]; then
+            log_file="test.log"
+          elif [ -f build.log ]; then
+            log_file="build.log"
+          fi
+
+          if [ -z "$log_file" ]; then
+            {
+              echo "SANITIZED_LOG<<__SANITIZED_LOG_EOF__"
+              printf '%s' 'No log file found'
+              echo
+              echo "__SANITIZED_LOG_EOF__"
+            } >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          if [ "${{ job.status }}" = "success" ]; then
+            extracted="$(grep -E 'Test Suite|Test Case|passed|failed|Executed|BUILD SUCCEEDED' "$log_file" || true)"
+          else
+            extracted="$(grep -E '\[!\]|error:|FAILED|fatal|Could not|BUILD FAILED|TEST FAILED|ARCHIVE FAILED|undefined symbol|linker|cannot find' "$log_file" || true)"
+          fi
+
+          if [ -z "$extracted" ]; then
+            extracted='(no matching log lines captured)'
+          fi
+
+          sanitized="$(printf '%s' "$extracted" | sed -E \
+            -e 's#/Users/[^ "\\]*#<path>#g' \
+            -e 's#/private/var/[^ "\\]*#<path>#g' \
+            -e 's#/var/folders/[^ "\\]*#<path>#g' \
+            -e 's#[^ ":]*/source/[^ "\\]*#<path>#g' \
+            -e 's#/Applications/Xcode[^ "\\]*#<xcode>#g' \
+            -e 's#[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}#<uuid>#g' \
+            -e 's#(Apple|iPhone) (Development|Distribution): [^]" )]*#\1 \2: <redacted>#g' \
+            -e 's#signingCertificate *= *[^;) ]*#signingCertificate=<redacted>#g' \
+            -e 's#PROVISIONING_PROFILE[^ =]*=[^ " )]*#PROVISIONING_PROFILE=<redacted>#g' \
+            -e 's#DEVELOPMENT_TEAM *= *[^ " )]*#DEVELOPMENT_TEAM=<redacted>#g')"
+
+          sanitized="$(printf '%s' "$sanitized" | tr '`' "'")"
+          if [ -n "$SCHEME_NAME" ]; then sanitized="${sanitized//$SCHEME_NAME/[SCHEME]}"; fi
+          if [ -n "$BUNDLE_ID" ]; then sanitized="${sanitized//$BUNDLE_ID/<bundle-id>}"; fi
+          if [ -n "$TEAM_ID" ]; then sanitized="${sanitized//$TEAM_ID/<team-id>}"; fi
+          sanitized="$(printf '%s' "$sanitized" | head -60 | head -c 8192 | sed 's/__SANITIZED_EOF__/[REDACTED]/g')"
+
+          {
+            echo "SANITIZED_LOG<<__SANITIZED_EOF__"
+            printf '%s' "$sanitized"
+            echo
+            echo "__SANITIZED_EOF__"
+          } >> "$GITHUB_ENV"
+
+      - name: Report success status
+        if: success()
+        env:
+          SCM_API_BASE_URL: ${{ secrets.SCM_API_BASE_URL }}
+          SCM_API_TOKEN: ${{ secrets.SCM_API_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$PROJECT_ID" ]; then
+            echo "No project id provided; skipping success status update"
+            exit 0
+          fi
+
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=success" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build and tests passed" --data-urlencode "name=ci/proxy")"
+
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "Success status update failed with HTTP ${http_code}"
+            exit 1
+          fi
+
+      - name: Report failure status
+        if: failure()
+        env:
+          SCM_API_BASE_URL: ${{ secrets.SCM_API_BASE_URL }}
+          SCM_API_TOKEN: ${{ secrets.SCM_API_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$PROJECT_ID" ]; then
+            echo "No project id provided; skipping failure status update"
+            exit 0
+          fi
+
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=failed" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build or tests failed" --data-urlencode "name=ci/proxy")"
+
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "Failure status update failed with HTTP ${http_code}"
+            exit 1
+          fi
+
+      - name: Comment on merge request success
+        if: success() && env.MERGE_REQUEST_IID != ''
+        env:
+          SCM_API_BASE_URL: ${{ secrets.SCM_API_BASE_URL }}
+          SCM_API_TOKEN: ${{ secrets.SCM_API_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          body="✅ Build and tests passed"
+
+          if [ -n "${SANITIZED_LOG:-}" ]; then
+            body="${body}
+
+            <details><summary>Sanitized test summary</summary>
+
+            \`\`\`
+            ${SANITIZED_LOG}
+            \`\`\`
+
+            </details>"
+          fi
+
+          body="${body}
+
+          [View run](${run_url})"
+
+          endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/merge_requests/${MERGE_REQUEST_IID}/notes"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "body=${body}")"
+
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "Success MR comment failed with HTTP ${http_code}"
+            exit 1
+          fi
+
+      - name: Comment on merge request failure
+        if: failure() && env.MERGE_REQUEST_IID != ''
+        env:
+          SCM_API_BASE_URL: ${{ secrets.SCM_API_BASE_URL }}
+          SCM_API_TOKEN: ${{ secrets.SCM_API_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          body="❌ Build or tests failed"
+
+          if [ -n "${SANITIZED_LOG:-}" ]; then
+            body="${body}
+
+            <details><summary>Sanitized error detail</summary>
+
+            \`\`\`
+            ${SANITIZED_LOG}
+            \`\`\`
+
+            </details>"
+          fi
+
+          body="${body}
+
+          [View run](${run_url})"
+
+          endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/merge_requests/${MERGE_REQUEST_IID}/notes"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "body=${body}")"
+
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "Failure MR comment failed with HTTP ${http_code}"
+            exit 1
+          fi
+
+      - name: Clean up
+        if: always()
+        run: |
+          rm -rf source
