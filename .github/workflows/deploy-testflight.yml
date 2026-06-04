@@ -53,10 +53,8 @@ jobs:
             echo "Invalid project_id format"
             exit 1
           fi
-          # ref/sha are semi-public Git metadata, not secrets. Masking them would
-          # rewrite later shell expansions (for example git clone --branch "$REF")
-          # to ***, so protection here relies on heredoc env writes and suppressed
-          # git output instead.
+          if [ -n "$ref" ]; then echo "::add-mask::$ref"; fi
+          if [ -n "$sha" ]; then echo "::add-mask::$sha"; fi
           if [ -n "$project_id" ]; then echo "::add-mask::$project_id"; fi
 
           {
