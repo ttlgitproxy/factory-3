@@ -167,15 +167,43 @@ jobs:
         run: |
           set -euo pipefail
 
-          simulator_id="$(xcrun simctl list devices available -j | python3 -c 'import json, sys; data = json.load(sys.stdin); devices = data.get("devices", {}); candidates = []; \
-          for runtime, runtime_devices in devices.items(): \
-              candidates.extend([(runtime, d.get("name", ""), d.get("udid", "")) for d in runtime_devices if d.get("isAvailable") and "iPhone" in d.get("name", "")]); \
-          print(candidates[0][2] if candidates else "")')"
+          simulator_id="$(python3 - <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          try:
+              result = subprocess.run(
+                  ["xcrun", "simctl", "list", "devices", "available", "-j"],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+          except subprocess.CalledProcessError:
+              print("Failed to list available simulators", file=sys.stderr)
+              sys.exit(1)
+
+          devices = json.loads(result.stdout).get("devices", {})
+
+          for runtime_devices in devices.values():
+              for device in runtime_devices:
+                  if device.get("isAvailable") and "iPhone" in device.get("name", ""):
+                      print(device.get("udid", ""))
+                      sys.exit(0)
+          PY
+          )"
 
           if [ -z "$simulator_id" ]; then
             echo "No available iPhone simulator found"
             exit 1
           fi
+
+          if ! printf '%s' "$simulator_id" | grep -Eq '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'; then
+            echo "simulator_id is not a valid UUID"
+            exit 1
+          fi
+
+          echo "::add-mask::$simulator_id"
 
           {
             echo "id<<__SIM_ID_EOF__"
