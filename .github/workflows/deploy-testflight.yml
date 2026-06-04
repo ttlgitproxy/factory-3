@@ -108,8 +108,8 @@ jobs:
           fi
 
           if [ -z "$SCM_API_BASE_URL" ] || [ -z "$SCM_API_TOKEN" ]; then
-            echo "SCM_API_BASE_URL and SCM_API_TOKEN secrets are required when project_id is provided"
-            exit 1
+            echo "⚠️ SCM_API_BASE_URL or SCM_API_TOKEN not configured; skipping status reporting"
+            exit 0
           fi
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -117,8 +117,8 @@ jobs:
           http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=running" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Deploy in progress" --data-urlencode "name=deploy/proxy")"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-            echo "Pending status update failed with HTTP ${http_code}"
-            exit 1
+            echo "⚠️ Pending status update failed with HTTP ${http_code} — continuing anyway"
+            exit 0
           fi
 
       - name: Select Xcode
@@ -496,14 +496,19 @@ jobs:
             exit 0
           fi
 
+          if [ -z "$SCM_API_BASE_URL" ] || [ -z "$SCM_API_TOKEN" ]; then
+            echo "⚠️ SCM_API_BASE_URL or SCM_API_TOKEN not configured; skipping status reporting"
+            exit 0
+          fi
+
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
           description="Deploy succeeded — v${VERSION} (${BUILD_NUMBER})"
           http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=success" --data-urlencode "target_url=${run_url}" --data-urlencode "description=${description}" --data-urlencode "name=deploy/proxy")"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-            echo "Success status update failed with HTTP ${http_code}"
-            exit 1
+            echo "⚠️ Success status update failed with HTTP ${http_code} — continuing anyway"
+            exit 0
           fi
 
       - name: Report failure status
@@ -519,6 +524,11 @@ jobs:
             exit 0
           fi
 
+          if [ -z "$SCM_API_BASE_URL" ] || [ -z "$SCM_API_TOKEN" ]; then
+            echo "⚠️ SCM_API_BASE_URL or SCM_API_TOKEN not configured; skipping status reporting"
+            exit 0
+          fi
+
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
           description="Deploy failed"
@@ -528,8 +538,8 @@ jobs:
           http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=failed" --data-urlencode "target_url=${run_url}" --data-urlencode "description=${description}" --data-urlencode "name=deploy/proxy")"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-            echo "Failure status update failed with HTTP ${http_code}"
-            exit 1
+            echo "⚠️ Failure status update failed with HTTP ${http_code} — continuing anyway"
+            exit 0
           fi
 
       - name: Comment on source commit
@@ -542,6 +552,11 @@ jobs:
 
           if [ -z "$PROJECT_ID" ]; then
             echo "No project id provided; skipping commit comment"
+            exit 0
+          fi
+
+          if [ -z "$SCM_API_BASE_URL" ] || [ -z "$SCM_API_TOKEN" ]; then
+            echo "⚠️ SCM_API_BASE_URL or SCM_API_TOKEN not configured; skipping status reporting"
             exit 0
           fi
 
@@ -573,8 +588,8 @@ jobs:
           http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "note=${body}")"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-            echo "Commit comment failed with HTTP ${http_code}"
-            exit 1
+            echo "⚠️ Commit comment failed with HTTP ${http_code} — continuing anyway"
+            exit 0
           fi
 
       - name: Clean up
