@@ -55,6 +55,7 @@ jobs:
             echo "Invalid merge_request_iid format"
             exit 1
           fi
+
           if [ -n "$ref" ]; then echo "::add-mask::$ref"; fi
           if [ -n "$sha" ]; then echo "::add-mask::$sha"; fi
           if [ -n "$project_id" ]; then echo "::add-mask::$project_id"; fi
@@ -261,12 +262,15 @@ jobs:
             log_file="build.log"
           fi
 
+          sanitized_log_path="$(pwd)/sanitized-log.txt"
+
           if [ -z "$log_file" ]; then
+            printf '%s' 'No log file found' > "$sanitized_log_path"
             {
-              echo "SANITIZED_LOG<<__SANITIZED_LOG_EOF__"
-              printf '%s' 'No log file found'
+              echo "SANITIZED_LOG_PATH<<__SANITIZED_LOG_PATH_EOF__"
+              printf '%s' "$sanitized_log_path"
               echo
-              echo "__SANITIZED_LOG_EOF__"
+              echo "__SANITIZED_LOG_PATH_EOF__"
             } >> "$GITHUB_ENV"
             exit 0
           fi
@@ -299,11 +303,13 @@ jobs:
           if [ -n "$TEAM_ID" ]; then sanitized="${sanitized//$TEAM_ID/<team-id>}"; fi
           sanitized="$(printf '%s' "$sanitized" | head -60 | head -c 8192 | sed 's/__SANITIZED_EOF__/[REDACTED]/g')"
 
+          printf '%s' "$sanitized" > "$sanitized_log_path"
+
           {
-            echo "SANITIZED_LOG<<__SANITIZED_EOF__"
-            printf '%s' "$sanitized"
+            echo "SANITIZED_LOG_PATH<<__SANITIZED_LOG_PATH_EOF__"
+            printf '%s' "$sanitized_log_path"
             echo
-            echo "__SANITIZED_EOF__"
+            echo "__SANITIZED_LOG_PATH_EOF__"
           } >> "$GITHUB_ENV"
 
       - name: Report success status
@@ -362,6 +368,7 @@ jobs:
 
       - name: Comment on merge request success
         if: success() && env.MERGE_REQUEST_IID != ''
+        working-directory: source
         env:
           SCM_API_BASE_URL: ${{ secrets.SCM_API_BASE_URL }}
           SCM_API_TOKEN: ${{ secrets.SCM_API_TOKEN }}
@@ -374,26 +381,38 @@ jobs:
           fi
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          body="✅ Build and tests passed"
+          body_file="$(pwd)/mr-comment-success.md"
+          export RUN_URL="$run_url"
+          export BODY_FILE="$body_file"
 
-          if [ -n "${SANITIZED_LOG:-}" ]; then
-            body="${body}
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
 
-            <details><summary>Sanitized test summary</summary>
+          run_url = os.environ["RUN_URL"]
+          body_file = Path(os.environ["BODY_FILE"])
+          log_path_value = os.environ.get("SANITIZED_LOG_PATH", "")
+          log_path = Path(log_path_value) if log_path_value else None
 
-            \`\`\`
-            ${SANITIZED_LOG}
-            \`\`\`
-
-            </details>"
-          fi
-
-          body="${body}
-
-          [View run](${run_url})"
+          parts = ["✅ Build and tests passed"]
+          if log_path and log_path.is_file() and log_path.read_text(encoding="utf-8"):
+              parts.extend([
+                  "",
+                  "<details><summary>Sanitized test summary</summary>",
+                  "",
+                  "```",
+                  log_path.read_text(encoding="utf-8"),
+                  "```",
+                  "",
+                  "</details>",
+              ])
+          parts.extend(["", f"[View run]({run_url})"])
+          body_file.write_text("\n".join(parts), encoding="utf-8")
+          PY
 
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/merge_requests/${MERGE_REQUEST_IID}/notes"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "body=${body}")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "body@${body_file}")"
+          rm -f "$body_file"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "⚠️ Success MR comment failed with HTTP ${http_code} — continuing anyway"
@@ -402,6 +421,7 @@ jobs:
 
       - name: Comment on merge request failure
         if: failure() && env.MERGE_REQUEST_IID != ''
+        working-directory: source
         env:
           SCM_API_BASE_URL: ${{ secrets.SCM_API_BASE_URL }}
           SCM_API_TOKEN: ${{ secrets.SCM_API_TOKEN }}
@@ -414,26 +434,38 @@ jobs:
           fi
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          body="❌ Build or tests failed"
+          body_file="$(pwd)/mr-comment-failure.md"
+          export RUN_URL="$run_url"
+          export BODY_FILE="$body_file"
 
-          if [ -n "${SANITIZED_LOG:-}" ]; then
-            body="${body}
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
 
-            <details><summary>Sanitized error detail</summary>
+          run_url = os.environ["RUN_URL"]
+          body_file = Path(os.environ["BODY_FILE"])
+          log_path_value = os.environ.get("SANITIZED_LOG_PATH", "")
+          log_path = Path(log_path_value) if log_path_value else None
 
-            \`\`\`
-            ${SANITIZED_LOG}
-            \`\`\`
-
-            </details>"
-          fi
-
-          body="${body}
-
-          [View run](${run_url})"
+          parts = ["❌ Build or tests failed"]
+          if log_path and log_path.is_file() and log_path.read_text(encoding="utf-8"):
+              parts.extend([
+                  "",
+                  "<details><summary>Sanitized error detail</summary>",
+                  "",
+                  "```",
+                  log_path.read_text(encoding="utf-8"),
+                  "```",
+                  "",
+                  "</details>",
+              ])
+          parts.extend(["", f"[View run]({run_url})"])
+          body_file.write_text("\n".join(parts), encoding="utf-8")
+          PY
 
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/merge_requests/${MERGE_REQUEST_IID}/notes"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "body=${body}")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "body@${body_file}")"
+          rm -f "$body_file"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "⚠️ Failure MR comment failed with HTTP ${http_code} — continuing anyway"
