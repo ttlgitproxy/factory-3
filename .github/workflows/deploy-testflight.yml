@@ -470,12 +470,17 @@ jobs:
             exit 0
           fi
 
-          extracted="$(grep -E '^\[!\]' deploy.log || true)"
-          if [ -z "$extracted" ]; then
-            extracted="$(grep -E 'error:|FAILED|fatal|Could not|cannot|No available|Unauthorized|forbidden|timed out|refused|Invalid|not found|Connection|App Store Connect|authentication|BUILD FAILED|ARCHIVE FAILED' deploy.log || true)"
-          fi
-          if [ -z "$extracted" ]; then
-            extracted="$(tail -30 deploy.log || true)"
+          line_count="$(wc -l < deploy.log | tr -d ' ')"
+          if [ "$line_count" -le 80 ]; then
+            extracted="$(cat deploy.log)"
+          else
+            extracted="$(grep -E '^\[!\]' deploy.log || true)"
+            if [ -z "$extracted" ]; then
+              extracted="$(grep -iE 'error[: ]|FAILED|fatal|Could not|cannot|LoadError|NoMethodError|NameError|SyntaxError|BUILD FAILED|ARCHIVE FAILED' deploy.log || true)"
+            fi
+            if [ -z "$extracted" ]; then
+              extracted="$(head -15 deploy.log; echo '--- [truncated] ---'; tail -30 deploy.log)"
+            fi
           fi
           if [ -z "$extracted" ]; then
             extracted='Deploy failed but no specific error lines were captured'
@@ -535,10 +540,13 @@ jobs:
           elif [ -f deploy.log ]; then
             deploy_error="$(grep -E '^\[!\]' deploy.log || true)"
             if [ -z "$deploy_error" ]; then
-              deploy_error="$(grep -iE 'error|fatal|failed|Could not|cannot|No available|Unauthorized|forbidden|timed out|refused|Invalid|not found|Connection|App Store Connect|authentication' deploy.log | grep -v '^\s*$' | tail -1 || true)"
+              deploy_error="$(grep -iE 'LoadError|NoMethodError|NameError|SyntaxError|cannot load|undefined method' deploy.log | grep -v '^\s*$' | head -1 || true)"
             fi
             if [ -z "$deploy_error" ]; then
-              deploy_error="$(tail -30 deploy.log || true)"
+              deploy_error="$(grep -iE 'error|fatal|failed|Could not' deploy.log | grep -v '^\s*$' | tail -1 || true)"
+            fi
+            if [ -z "$deploy_error" ]; then
+              deploy_error="$(head -3 deploy.log | tail -1 || true)"
             fi
 
             deploy_error="$(printf '%s' "$deploy_error" | sed -E \
