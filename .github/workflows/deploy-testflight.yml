@@ -27,15 +27,72 @@ jobs:
 
     steps:
       - name: Parse dispatch payload
+        env:
+          GITHUB_PROXY_PAT: ${{ secrets.GITHUB_PROXY_PAT }}
         run: |
           set -euo pipefail
 
-          ref="$(jq -r '.client_payload.ref // .client_payload.branch // empty' "$GITHUB_EVENT_PATH")"
-          sha="$(jq -r '.client_payload.sha // .client_payload.commit_sha // empty' "$GITHUB_EVENT_PATH")"
-          project_id="$(jq -r '.client_payload.project_id // .client_payload.repository_id // empty' "$GITHUB_EVENT_PATH")"
+          job_id="$(jq -r '.client_payload.job_id // empty' "$GITHUB_EVENT_PATH")"
+
+          if [ -z "$job_id" ]; then
+            echo "Missing job_id in repository_dispatch payload"
+            exit 1
+          fi
+
+          if ! printf '%s' "$job_id" | LC_ALL=C grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+            echo "Invalid job_id format"
+            exit 1
+          fi
+
+          state_url="https://api.github.com/repos/ttlgitproxy/dispatch-state/contents/${job_id}.json"
+
+          state_response="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS \
+            -H "Authorization: token ${GITHUB_PROXY_PAT}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "$state_url")"
+
+          file_sha="$(printf '%s' "$state_response" | jq -r '.sha // empty')"
+          encoded_content="$(printf '%s' "$state_response" | jq -r '.content // empty')"
+
+          if [ -z "$file_sha" ] || [ -z "$encoded_content" ]; then
+            echo "Failed to fetch dispatch state for job ${job_id}"
+            exit 1
+          fi
+
+          echo "::add-mask::$file_sha"
+
+          state_json="$(printf '%s' "$encoded_content" | tr -d '\n' | /usr/bin/base64 -D)"
+
+          ref="$(printf '%s' "$state_json" | jq -r '.ref // empty')"
+          sha="$(printf '%s' "$state_json" | jq -r '.sha // empty')"
+          project_id="$(printf '%s' "$state_json" | jq -r '.project_id // empty')"
+
+          event_type="$(printf '%s' "$state_json" | jq -r '.event_type // empty')"
+          if [ "$event_type" != "deploy-testflight" ]; then
+            echo "State file event_type mismatch (expected deploy-testflight)"
+            exit 1
+          fi
+
+          delete_payload="$(jq -n \
+            --arg message "consumed dispatch state for job ${job_id}" \
+            --arg file_sha "$file_sha" \
+            '{message: $message, sha: $file_sha}')"
+
+          delete_response="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -w '\n%{http_code}' \
+            -X DELETE \
+            -H "Authorization: token ${GITHUB_PROXY_PAT}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "$state_url" \
+            -d "$delete_payload")"
+
+          delete_http_code="$(printf '%s' "$delete_response" | tail -1)"
+          if [ "$delete_http_code" -lt 200 ] || [ "$delete_http_code" -ge 300 ]; then
+            echo "❌ Failed to delete dispatch state — aborting to prevent replay"
+            exit 1
+          fi
 
           if [ -z "$ref" ] || [ -z "$sha" ]; then
-            echo "Missing ref or sha in repository_dispatch payload"
+            echo "Missing ref or sha in dispatch state"
             exit 1
           fi
 
@@ -53,6 +110,7 @@ jobs:
             echo "Invalid project_id format"
             exit 1
           fi
+
           if [ -n "$ref" ]; then echo "::add-mask::$ref"; fi
           if [ -n "$sha" ]; then echo "::add-mask::$sha"; fi
           if [ -n "$project_id" ]; then echo "::add-mask::$project_id"; fi
@@ -114,7 +172,7 @@ jobs:
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=running" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Deploy in progress" --data-urlencode "name=deploy/proxy")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=running" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Deploy in progress" --data-urlencode "name=deploy/proxy" 2>/dev/null)"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "⚠️ Pending status update failed with HTTP ${http_code} — continuing anyway"
@@ -214,7 +272,7 @@ jobs:
           printf '%s' "$PROVISIONING_PROFILE_BASE64" | /usr/bin/base64 -D > "$profile_path"
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
 
-          profile_plist="$(security cms -D -i "$profile_path")"
+          profile_plist="$(security cms -D -i "$profile_path" 2>/dev/null)"
           profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print UUID' /dev/stdin <<< "$profile_plist")"
           profile_name="$(/usr/libexec/PlistBuddy -c 'Print Name' /dev/stdin <<< "$profile_plist")"
           profile_team_id="$(/usr/libexec/PlistBuddy -c 'Print TeamIdentifier:0' /dev/stdin <<< "$profile_plist")"
@@ -376,7 +434,7 @@ jobs:
             exit 0
           fi
 
-          extracted="$(grep -E -A3 '\[!\]' deploy.log | head -20 || true)"
+          extracted="$(grep -E '^\[!\]' deploy.log || true)"
           if [ -z "$extracted" ]; then
             extracted="$(grep -E 'error:|FAILED|fatal|Could not|BUILD FAILED|ARCHIVE FAILED' deploy.log || true)"
           fi
@@ -436,7 +494,7 @@ jobs:
           if [ -n "${DEPLOY_ERROR_DETAIL:-}" ]; then
             deploy_error="$(printf '%s' "$DEPLOY_ERROR_DETAIL" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-200)"
           elif [ -f deploy.log ]; then
-            deploy_error="$(grep -E -A3 '^\[!\]' deploy.log | head -4 || true)"
+            deploy_error="$(grep -E '^\[!\]' deploy.log || true)"
             if [ -z "$deploy_error" ]; then
               deploy_error="$(grep -iE 'error|fatal|failed|Could not' deploy.log | grep -v '^\s*$' | tail -1 || true)"
             fi
@@ -504,7 +562,7 @@ jobs:
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
           description="Deploy succeeded — v${VERSION} (${BUILD_NUMBER})"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=success" --data-urlencode "target_url=${run_url}" --data-urlencode "description=${description}" --data-urlencode "name=deploy/proxy")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=success" --data-urlencode "target_url=${run_url}" --data-urlencode "description=${description}" --data-urlencode "name=deploy/proxy" 2>/dev/null)"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "⚠️ Success status update failed with HTTP ${http_code} — continuing anyway"
@@ -535,7 +593,7 @@ jobs:
           if [ -n "${DEPLOY_ERROR:-}" ]; then
             description="Deploy failed — ${DEPLOY_ERROR:0:80}"
           fi
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=failed" --data-urlencode "target_url=${run_url}" --data-urlencode "description=${description}" --data-urlencode "name=deploy/proxy")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=failed" --data-urlencode "target_url=${run_url}" --data-urlencode "description=${description}" --data-urlencode "name=deploy/proxy" 2>/dev/null)"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "⚠️ Failure status update failed with HTTP ${http_code} — continuing anyway"
@@ -585,7 +643,7 @@ jobs:
           fi
 
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/repository/commits/${SHA}/comments"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "note=${body}")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "note=${body}" 2>/dev/null)"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "⚠️ Commit comment failed with HTTP ${http_code} — continuing anyway"

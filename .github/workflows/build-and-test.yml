@@ -23,16 +23,67 @@ jobs:
 
     steps:
       - name: Parse dispatch payload
+        env:
+          GITHUB_PROXY_PAT: ${{ secrets.GITHUB_PROXY_PAT }}
         run: |
           set -euo pipefail
 
-          ref="$(jq -r '.client_payload.ref // .client_payload.branch // empty' "$GITHUB_EVENT_PATH")"
-          sha="$(jq -r '.client_payload.sha // .client_payload.commit_sha // empty' "$GITHUB_EVENT_PATH")"
-          project_id="$(jq -r '.client_payload.project_id // .client_payload.repository_id // empty' "$GITHUB_EVENT_PATH")"
-          merge_request_iid="$(jq -r '.client_payload.merge_request_iid // .client_payload.mr_iid // .client_payload.pr_number // empty' "$GITHUB_EVENT_PATH")"
+          job_id="$(jq -r '.client_payload.job_id // empty' "$GITHUB_EVENT_PATH")"
+
+          if [ -z "$job_id" ]; then
+            echo "Missing job_id in repository_dispatch payload"
+            exit 1
+          fi
+
+          if ! printf '%s' "$job_id" | LC_ALL=C grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+            echo "Invalid job_id format"
+            exit 1
+          fi
+
+          state_url="https://api.github.com/repos/ttlgitproxy/dispatch-state/contents/${job_id}.json"
+
+          state_response="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS \
+            -H "Authorization: token ${GITHUB_PROXY_PAT}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "$state_url")"
+
+          file_sha="$(printf '%s' "$state_response" | jq -r '.sha // empty')"
+          encoded_content="$(printf '%s' "$state_response" | jq -r '.content // empty')"
+
+          if [ -z "$file_sha" ] || [ -z "$encoded_content" ]; then
+            echo "Failed to fetch dispatch state for job ${job_id}"
+            exit 1
+          fi
+
+          echo "::add-mask::$file_sha"
+
+          state_json="$(printf '%s' "$encoded_content" | tr -d '\n' | /usr/bin/base64 -D)"
+
+          ref="$(printf '%s' "$state_json" | jq -r '.ref // empty')"
+          sha="$(printf '%s' "$state_json" | jq -r '.sha // empty')"
+          project_id="$(printf '%s' "$state_json" | jq -r '.project_id // empty')"
+          merge_request_iid="$(printf '%s' "$state_json" | jq -r '.mr_iid // empty')"
+
+          event_type="$(printf '%s' "$state_json" | jq -r '.event_type // empty')"
+          if [ "$event_type" != "build-and-test" ]; then
+            echo "State file event_type mismatch (expected build-and-test)"
+            exit 1
+          fi
+
+          delete_payload="$(jq -n \
+            --arg message "consumed dispatch state for job ${job_id}" \
+            --arg file_sha "$file_sha" \
+            '{message: $message, sha: $file_sha}')"
+
+          curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null \
+            -X DELETE \
+            -H "Authorization: token ${GITHUB_PROXY_PAT}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "$state_url" \
+            -d "$delete_payload" || echo "⚠️ Failed to delete state file — continuing"
 
           if [ -z "$ref" ] || [ -z "$sha" ]; then
-            echo "Missing ref or sha in repository_dispatch payload"
+            echo "Missing ref or sha in dispatch state"
             exit 1
           fi
 
@@ -124,7 +175,7 @@ jobs:
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=running" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build and test in progress" --data-urlencode "name=ci/proxy")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=running" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build and test in progress" --data-urlencode "name=ci/proxy" 2>/dev/null)"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "⚠️ Pending status update failed with HTTP ${http_code} — continuing anyway"
@@ -319,7 +370,7 @@ jobs:
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=success" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build and tests passed" --data-urlencode "name=ci/proxy")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=success" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build and tests passed" --data-urlencode "name=ci/proxy" 2>/dev/null)"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "⚠️ Success status update failed with HTTP ${http_code} — continuing anyway"
@@ -346,7 +397,7 @@ jobs:
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=failed" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build or tests failed" --data-urlencode "name=ci/proxy")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=failed" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build or tests failed" --data-urlencode "name=ci/proxy" 2>/dev/null)"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "⚠️ Failure status update failed with HTTP ${http_code} — continuing anyway"
@@ -403,7 +454,7 @@ jobs:
           PY
 
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/merge_requests/${MERGE_REQUEST_IID}/notes"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "body@${body_file}")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "body@${body_file}" 2>/dev/null)"
           rm -f "$body_file"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
@@ -461,7 +512,7 @@ jobs:
           PY
 
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/merge_requests/${MERGE_REQUEST_IID}/notes"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "body@${body_file}")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "body@${body_file}" 2>/dev/null)"
           rm -f "$body_file"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
