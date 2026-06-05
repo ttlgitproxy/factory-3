@@ -266,12 +266,6 @@ jobs:
 
           if [ -z "$log_file" ]; then
             printf '%s' 'No log file found' > "$sanitized_log_path"
-            {
-              echo "SANITIZED_LOG_PATH<<__SANITIZED_LOG_PATH_EOF__"
-              printf '%s' "$sanitized_log_path"
-              echo
-              echo "__SANITIZED_LOG_PATH_EOF__"
-            } >> "$GITHUB_ENV"
             exit 0
           fi
 
@@ -304,13 +298,6 @@ jobs:
           sanitized="$(printf '%s' "$sanitized" | head -60 | head -c 8192 | sed 's/__SANITIZED_EOF__/[REDACTED]/g')"
 
           printf '%s' "$sanitized" > "$sanitized_log_path"
-
-          {
-            echo "SANITIZED_LOG_PATH<<__SANITIZED_LOG_PATH_EOF__"
-            printf '%s' "$sanitized_log_path"
-            echo
-            echo "__SANITIZED_LOG_PATH_EOF__"
-          } >> "$GITHUB_ENV"
 
       - name: Report success status
         if: success()
@@ -391,17 +378,22 @@ jobs:
 
           run_url = os.environ["RUN_URL"]
           body_file = Path(os.environ["BODY_FILE"])
-          log_path_value = os.environ.get("SANITIZED_LOG_PATH", "")
-          log_path = Path(log_path_value) if log_path_value else None
+          log_path = Path.cwd() / "sanitized-log.txt"
+
+          sanitized_excerpt = ""
+          if log_path.exists() and not log_path.is_symlink() and log_path.is_file():
+              sanitized_excerpt = log_path.read_text(encoding="utf-8")
+              sanitized_excerpt = "\n".join(sanitized_excerpt.splitlines()[:60])
+              sanitized_excerpt = sanitized_excerpt.encode("utf-8")[:8192].decode("utf-8", errors="ignore")
 
           parts = ["✅ Build and tests passed"]
-          if log_path and log_path.is_file() and log_path.read_text(encoding="utf-8"):
+          if sanitized_excerpt:
               parts.extend([
                   "",
                   "<details><summary>Sanitized test summary</summary>",
                   "",
                   "```",
-                  log_path.read_text(encoding="utf-8"),
+                  sanitized_excerpt,
                   "```",
                   "",
                   "</details>",
@@ -444,17 +436,22 @@ jobs:
 
           run_url = os.environ["RUN_URL"]
           body_file = Path(os.environ["BODY_FILE"])
-          log_path_value = os.environ.get("SANITIZED_LOG_PATH", "")
-          log_path = Path(log_path_value) if log_path_value else None
+          log_path = Path.cwd() / "sanitized-log.txt"
+
+          sanitized_excerpt = ""
+          if log_path.exists() and not log_path.is_symlink() and log_path.is_file():
+              sanitized_excerpt = log_path.read_text(encoding="utf-8")
+              sanitized_excerpt = "\n".join(sanitized_excerpt.splitlines()[:60])
+              sanitized_excerpt = sanitized_excerpt.encode("utf-8")[:8192].decode("utf-8", errors="ignore")
 
           parts = ["❌ Build or tests failed"]
-          if log_path and log_path.is_file() and log_path.read_text(encoding="utf-8"):
+          if sanitized_excerpt:
               parts.extend([
                   "",
                   "<details><summary>Sanitized error detail</summary>",
                   "",
                   "```",
-                  log_path.read_text(encoding="utf-8"),
+                  sanitized_excerpt,
                   "```",
                   "",
                   "</details>",
