@@ -24,7 +24,7 @@ jobs:
     steps:
       - name: Parse dispatch payload
         env:
-          GITHUB_PROXY_PAT: ${{ secrets.GITHUB_PROXY_PAT }}
+          PROXY_PAT: ${{ secrets.PROXY_PAT }}
         run: |
           set -euo pipefail
 
@@ -43,7 +43,7 @@ jobs:
           state_url="https://api.github.com/repos/ttlgitproxy/dispatch-state/contents/${job_id}.json"
 
           state_response="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS \
-            -H "Authorization: token ${GITHUB_PROXY_PAT}" \
+            -H "Authorization: token ${PROXY_PAT}" \
             -H "Accept: application/vnd.github.v3+json" \
             "$state_url")"
 
@@ -77,7 +77,7 @@ jobs:
 
           curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null \
             -X DELETE \
-            -H "Authorization: token ${GITHUB_PROXY_PAT}" \
+            -H "Authorization: token ${PROXY_PAT}" \
             -H "Accept: application/vnd.github.v3+json" \
             "$state_url" \
             -d "$delete_payload" || echo "⚠️ Failed to delete state file — continuing"
