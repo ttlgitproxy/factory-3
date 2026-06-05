@@ -3,6 +3,12 @@ name: Deploy to TestFlight
 on:
   repository_dispatch:
     types: [deploy-testflight]
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'Dispatch state job ID (UUID from dispatch-state repo)'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -45,9 +51,12 @@ jobs:
           }
 
           job_id="$(jq -r '.client_payload.job_id // empty' "$GITHUB_EVENT_PATH")"
+          if [ -z "$job_id" ]; then
+            job_id="${{ github.event.inputs.job_id }}"
+          fi
 
           if [ -z "$job_id" ]; then
-            echo "Missing job_id in repository_dispatch payload"
+            echo "Missing job_id in dispatch payload"
             set_fallback_env
             exit 1
           fi
@@ -433,6 +442,10 @@ jobs:
 
           if [ "$fastlane_exit" -ne 0 ]; then
             echo "::warning::Fastlane beta exited with code $fastlane_exit — see deploy.log artifact"
+            if [ -f deploy.log ]; then
+              line_count="$(wc -l < deploy.log)"
+              echo "deploy.log: ${line_count} lines captured"
+            fi
             exit "$fastlane_exit"
           else
             echo "Fastlane beta succeeded"
@@ -459,7 +472,10 @@ jobs:
 
           extracted="$(grep -E '^\[!\]' deploy.log || true)"
           if [ -z "$extracted" ]; then
-            extracted="$(grep -E 'error:|FAILED|fatal|Could not|BUILD FAILED|ARCHIVE FAILED' deploy.log || true)"
+            extracted="$(grep -E 'error:|FAILED|fatal|Could not|cannot|No available|Unauthorized|forbidden|timed out|refused|Invalid|not found|Connection|App Store Connect|authentication|BUILD FAILED|ARCHIVE FAILED' deploy.log || true)"
+          fi
+          if [ -z "$extracted" ]; then
+            extracted="$(tail -30 deploy.log || true)"
           fi
           if [ -z "$extracted" ]; then
             extracted='Deploy failed but no specific error lines were captured'
@@ -519,7 +535,10 @@ jobs:
           elif [ -f deploy.log ]; then
             deploy_error="$(grep -E '^\[!\]' deploy.log || true)"
             if [ -z "$deploy_error" ]; then
-              deploy_error="$(grep -iE 'error|fatal|failed|Could not' deploy.log | grep -v '^\s*$' | tail -1 || true)"
+              deploy_error="$(grep -iE 'error|fatal|failed|Could not|cannot|No available|Unauthorized|forbidden|timed out|refused|Invalid|not found|Connection|App Store Connect|authentication' deploy.log | grep -v '^\s*$' | tail -1 || true)"
+            fi
+            if [ -z "$deploy_error" ]; then
+              deploy_error="$(tail -30 deploy.log || true)"
             fi
 
             deploy_error="$(printf '%s' "$deploy_error" | sed -E \
