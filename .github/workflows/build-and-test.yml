@@ -55,12 +55,20 @@ jobs:
             exit 1
           fi
 
+          echo "::add-mask::$file_sha"
+
           state_json="$(printf '%s' "$encoded_content" | tr -d '\n' | /usr/bin/base64 -D)"
 
           ref="$(printf '%s' "$state_json" | jq -r '.ref // empty')"
           sha="$(printf '%s' "$state_json" | jq -r '.sha // empty')"
           project_id="$(printf '%s' "$state_json" | jq -r '.project_id // empty')"
           merge_request_iid="$(printf '%s' "$state_json" | jq -r '.mr_iid // empty')"
+
+          event_type="$(printf '%s' "$state_json" | jq -r '.event_type // empty')"
+          if [ "$event_type" != "build-and-test" ]; then
+            echo "State file event_type mismatch (expected build-and-test)"
+            exit 1
+          fi
 
           delete_payload="$(jq -n \
             --arg message "consumed dispatch state for job ${job_id}" \

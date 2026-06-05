@@ -59,23 +59,37 @@ jobs:
             exit 1
           fi
 
+          echo "::add-mask::$file_sha"
+
           state_json="$(printf '%s' "$encoded_content" | tr -d '\n' | /usr/bin/base64 -D)"
 
           ref="$(printf '%s' "$state_json" | jq -r '.ref // empty')"
           sha="$(printf '%s' "$state_json" | jq -r '.sha // empty')"
           project_id="$(printf '%s' "$state_json" | jq -r '.project_id // empty')"
 
+          event_type="$(printf '%s' "$state_json" | jq -r '.event_type // empty')"
+          if [ "$event_type" != "deploy-testflight" ]; then
+            echo "State file event_type mismatch (expected deploy-testflight)"
+            exit 1
+          fi
+
           delete_payload="$(jq -n \
             --arg message "consumed dispatch state for job ${job_id}" \
             --arg file_sha "$file_sha" \
             '{message: $message, sha: $file_sha}')"
 
-          curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null \
+          delete_response="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -w '\n%{http_code}' \
             -X DELETE \
             -H "Authorization: token ${GITHUB_PROXY_PAT}" \
             -H "Accept: application/vnd.github.v3+json" \
             "$state_url" \
-            -d "$delete_payload" || echo "⚠️ Failed to delete state file — continuing"
+            -d "$delete_payload")"
+
+          delete_http_code="$(printf '%s' "$delete_response" | tail -1)"
+          if [ "$delete_http_code" -lt 200 ] || [ "$delete_http_code" -ge 300 ]; then
+            echo "❌ Failed to delete dispatch state — aborting to prevent replay"
+            exit 1
+          fi
 
           if [ -z "$ref" ] || [ -z "$sha" ]; then
             echo "Missing ref or sha in dispatch state"
@@ -258,7 +272,7 @@ jobs:
           printf '%s' "$PROVISIONING_PROFILE_BASE64" | /usr/bin/base64 -D > "$profile_path"
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
 
-          profile_plist="$(security cms -D -i "$profile_path")"
+          profile_plist="$(security cms -D -i "$profile_path" 2>/dev/null)"
           profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print UUID' /dev/stdin <<< "$profile_plist")"
           profile_name="$(/usr/libexec/PlistBuddy -c 'Print Name' /dev/stdin <<< "$profile_plist")"
           profile_team_id="$(/usr/libexec/PlistBuddy -c 'Print TeamIdentifier:0' /dev/stdin <<< "$profile_plist")"
