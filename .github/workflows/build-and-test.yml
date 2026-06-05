@@ -167,7 +167,7 @@ jobs:
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=running" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build and test in progress" --data-urlencode "name=ci/proxy")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=running" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build and test in progress" --data-urlencode "name=ci/proxy" 2>/dev/null)"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "⚠️ Pending status update failed with HTTP ${http_code} — continuing anyway"
@@ -362,7 +362,7 @@ jobs:
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=success" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build and tests passed" --data-urlencode "name=ci/proxy")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=success" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build and tests passed" --data-urlencode "name=ci/proxy" 2>/dev/null)"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "⚠️ Success status update failed with HTTP ${http_code} — continuing anyway"
@@ -389,7 +389,7 @@ jobs:
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=failed" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build or tests failed" --data-urlencode "name=ci/proxy")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=failed" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Build or tests failed" --data-urlencode "name=ci/proxy" 2>/dev/null)"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "⚠️ Failure status update failed with HTTP ${http_code} — continuing anyway"
@@ -446,7 +446,7 @@ jobs:
           PY
 
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/merge_requests/${MERGE_REQUEST_IID}/notes"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "body@${body_file}")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "body@${body_file}" 2>/dev/null)"
           rm -f "$body_file"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
@@ -504,7 +504,7 @@ jobs:
           PY
 
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/merge_requests/${MERGE_REQUEST_IID}/notes"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "body@${body_file}")"
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "body@${body_file}" 2>/dev/null)"
           rm -f "$body_file"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
