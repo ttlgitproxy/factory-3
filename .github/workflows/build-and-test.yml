@@ -28,15 +28,29 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Extract fallback fields from payload for status reporting if state fetch fails
+          fallback_project_id="$(jq -r '.client_payload.project_id // empty' "$GITHUB_EVENT_PATH")"
+          fallback_sha="$(jq -r '.client_payload.sha // empty' "$GITHUB_EVENT_PATH")"
+          set_fallback_env() {
+            if [ -n "$fallback_project_id" ] && printf '%s' "$fallback_project_id" | LC_ALL=C grep -Eq '^[0-9]+$'; then
+              echo "PROJECT_ID=$fallback_project_id" >> "$GITHUB_ENV"
+            fi
+            if [ -n "$fallback_sha" ] && printf '%s' "$fallback_sha" | LC_ALL=C grep -Eq '^[0-9a-f]{7,40}$'; then
+              echo "SHA=$fallback_sha" >> "$GITHUB_ENV"
+            fi
+          }
+
           job_id="$(jq -r '.client_payload.job_id // empty' "$GITHUB_EVENT_PATH")"
 
           if [ -z "$job_id" ]; then
             echo "Missing job_id in repository_dispatch payload"
+            set_fallback_env
             exit 1
           fi
 
           if ! printf '%s' "$job_id" | LC_ALL=C grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
             echo "Invalid job_id format"
+            set_fallback_env
             exit 1
           fi
 
@@ -52,6 +66,7 @@ jobs:
 
           if [ -z "$file_sha" ] || [ -z "$encoded_content" ]; then
             echo "Failed to fetch dispatch state for job ${job_id}"
+            set_fallback_env
             exit 1
           fi
 
@@ -67,6 +82,7 @@ jobs:
           event_type="$(printf '%s' "$state_json" | jq -r '.event_type // empty')"
           if [ "$event_type" != "build-and-test" ]; then
             echo "State file event_type mismatch (expected build-and-test)"
+            set_fallback_env
             exit 1
           fi
 
@@ -84,26 +100,31 @@ jobs:
 
           if [ -z "$ref" ] || [ -z "$sha" ]; then
             echo "Missing ref or sha in dispatch state"
+            set_fallback_env
             exit 1
           fi
 
           if ! printf '%s' "$ref" | LC_ALL=C grep -Eq '^[A-Za-z0-9._/-]+$'; then
             echo "Invalid ref format"
+            set_fallback_env
             exit 1
           fi
 
           if ! printf '%s' "$sha" | LC_ALL=C grep -Eq '^[0-9a-f]{7,40}$'; then
             echo "Invalid sha format"
+            set_fallback_env
             exit 1
           fi
 
           if [ -n "$project_id" ] && ! printf '%s' "$project_id" | LC_ALL=C grep -Eq '^[0-9]+$'; then
             echo "Invalid project_id format"
+            set_fallback_env
             exit 1
           fi
 
           if [ -n "$merge_request_iid" ] && ! printf '%s' "$merge_request_iid" | LC_ALL=C grep -Eq '^[0-9]+$'; then
             echo "Invalid merge_request_iid format"
+            set_fallback_env
             exit 1
           fi
 
@@ -385,8 +406,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "$PROJECT_ID" ]; then
-            echo "No project id provided; skipping failure status update"
+          if [ -z "$PROJECT_ID" ] || [ -z "${SHA:-}" ]; then
+            echo "No project id or sha provided; skipping failure status update"
             exit 0
           fi
 
