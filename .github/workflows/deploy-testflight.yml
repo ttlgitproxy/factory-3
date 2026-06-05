@@ -230,7 +230,7 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '3.2'
+          ruby-version: '3.3'
           bundler-cache: true
           working-directory: source
 
@@ -427,13 +427,15 @@ jobs:
           export GYM_XCARGS="PROVISIONING_PROFILE_SPECIFIER=${PROFILE_NAME} CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=Apple Distribution DEVELOPMENT_TEAM=${TEAM_ID} PRODUCT_BUNDLE_IDENTIFIER=${BUNDLE_ID}"
 
           set +e
-          bundle exec fastlane beta 2>&1 | tee deploy.log > /dev/null
-          fastlane_exit="${PIPESTATUS[0]}"
+          bundle exec fastlane beta > deploy.log 2>&1
+          fastlane_exit="$?"
           set -e
 
           if [ "$fastlane_exit" -ne 0 ]; then
-            echo "Fastlane beta failed"
+            echo "::warning::Fastlane beta exited with code $fastlane_exit — see deploy.log artifact"
             exit "$fastlane_exit"
+          else
+            echo "Fastlane beta succeeded"
           fi
 
       - name: Sanitize deploy error detail
