@@ -3,6 +3,12 @@ name: Build & Test
 on:
   repository_dispatch:
     types: [build-and-test]
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'Dispatch state job ID (UUID from dispatch-state repo)'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -41,9 +47,12 @@ jobs:
           }
 
           job_id="$(jq -r '.client_payload.job_id // empty' "$GITHUB_EVENT_PATH")"
+          if [ -z "$job_id" ]; then
+            job_id="${{ github.event.inputs.job_id }}"
+          fi
 
           if [ -z "$job_id" ]; then
-            echo "Missing job_id in repository_dispatch payload"
+            echo "Missing job_id in dispatch payload"
             set_fallback_env
             exit 1
           fi
