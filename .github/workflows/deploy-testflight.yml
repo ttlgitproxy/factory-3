@@ -28,7 +28,7 @@ jobs:
     steps:
       - name: Parse dispatch payload
         env:
-          DISPATCH_STATE_PAT: ${{ secrets.DISPATCH_STATE_PAT }}
+          GITHUB_PROXY_PAT: ${{ secrets.GITHUB_PROXY_PAT }}
         run: |
           set -euo pipefail
 
@@ -47,7 +47,7 @@ jobs:
           state_url="https://api.github.com/repos/ttlgitproxy/dispatch-state/contents/${job_id}.json"
 
           state_response="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS \
-            -H "Authorization: token ${DISPATCH_STATE_PAT}" \
+            -H "Authorization: token ${GITHUB_PROXY_PAT}" \
             -H "Accept: application/vnd.github.v3+json" \
             "$state_url")"
 
@@ -72,7 +72,7 @@ jobs:
 
           curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null \
             -X DELETE \
-            -H "Authorization: token ${DISPATCH_STATE_PAT}" \
+            -H "Authorization: token ${GITHUB_PROXY_PAT}" \
             -H "Accept: application/vnd.github.v3+json" \
             "$state_url" \
             -d "$delete_payload" || echo "⚠️ Failed to delete state file — continuing"
@@ -420,7 +420,7 @@ jobs:
             exit 0
           fi
 
-          extracted="$(grep -E -A3 '\[!\]' deploy.log | head -20 || true)"
+          extracted="$(grep -E '^\[!\]' deploy.log || true)"
           if [ -z "$extracted" ]; then
             extracted="$(grep -E 'error:|FAILED|fatal|Could not|BUILD FAILED|ARCHIVE FAILED' deploy.log || true)"
           fi
@@ -480,7 +480,7 @@ jobs:
           if [ -n "${DEPLOY_ERROR_DETAIL:-}" ]; then
             deploy_error="$(printf '%s' "$DEPLOY_ERROR_DETAIL" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-200)"
           elif [ -f deploy.log ]; then
-            deploy_error="$(grep -E -A3 '^\[!\]' deploy.log | head -4 || true)"
+            deploy_error="$(grep -E '^\[!\]' deploy.log || true)"
             if [ -z "$deploy_error" ]; then
               deploy_error="$(grep -iE 'error|fatal|failed|Could not' deploy.log | grep -v '^\s*$' | tail -1 || true)"
             fi
