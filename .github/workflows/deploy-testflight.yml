@@ -501,11 +501,7 @@ jobs:
             if [ -z "${var_name:-}" ]; then
               continue
             fi
-            if [[ -v "$var_name" ]]; then
-              val="${!var_name}"
-            else
-              val=""
-            fi
+            val="${!var_name:-}"
             if [ -z "$val" ]; then
               continue
             fi
