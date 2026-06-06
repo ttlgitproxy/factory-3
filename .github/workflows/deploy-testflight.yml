@@ -506,7 +506,7 @@ jobs:
               continue
             fi
             slug="$(printf '%s' "$var_name" | tr '[:upper:]' '[:lower:]' | tr '_' '-')"
-            escaped_val="$(printf '%s' "$val" | sed 's/[#.[\]*^$&\\/]/\\&/g')"
+            escaped_val="$(printf '%s' "$val" | sed 's/[][#.*^$&\\]/\\&/g')"
             sed -i.bak "s#${escaped_val}#<${slug}>#g" "$temp_log"
           done <<< "$dynamic_env_vars"
           rm -f "$temp_log.bak"
