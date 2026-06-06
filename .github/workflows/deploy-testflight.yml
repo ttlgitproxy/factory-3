@@ -470,13 +470,7 @@ jobs:
             exit 0
           fi
 
-          extracted="$(grep -E '^\[!\]' deploy.log || true)"
-          if [ -z "$extracted" ]; then
-            extracted="$(grep -E 'error:|FAILED|fatal|Could not|cannot|No available|Unauthorized|forbidden|timed out|refused|Invalid|not found|Connection|App Store Connect|authentication|BUILD FAILED|ARCHIVE FAILED' deploy.log || true)"
-          fi
-          if [ -z "$extracted" ]; then
-            extracted="$(tail -30 deploy.log || true)"
-          fi
+          extracted="$(cat deploy.log)"
           if [ -z "$extracted" ]; then
             extracted='Deploy failed but no specific error lines were captured'
           fi
@@ -485,11 +479,18 @@ jobs:
             -e 's#/Users/[^ "\\]*#<path>#g' \
             -e 's#/private/var/[^ "\\]*#<path>#g' \
             -e 's#/var/folders/[^ "\\]*#<path>#g' \
+            -e 's#(^|[[:space:]])source/[^ "\\]*#\1<path>#g' \
             -e 's#[^ ":]*/source/[^ "\\]*#<path>#g' \
             -e 's#/Applications/Xcode[^ "\\]*#<xcode>#g' \
             -e 's#[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}#<uuid>#g' \
-            -e 's#(Apple|iPhone) (Development|Distribution): [^]" )]*#\1 \2: <redacted>#g' \
-            -e 's#signingCertificate *= *[^;) ]*#signingCertificate=<redacted>#g' \
+            -e 's#(Apple|iPhone) (Development|Distribution): [^"]*\)#\1 \2: <redacted>)#g' \
+            -e 's#(Apple|iPhone) (Development|Distribution): [^" )]+#\1 \2: <redacted>#g' \
+            -e 's#signingCertificate *= *"[^"]*"#signingCertificate=<redacted>#g' \
+            -e 's#signingCertificate *= *[^;)]*#signingCertificate=<redacted>#g' \
+            -e 's#CODE_SIGN_IDENTITY *= *"[^"]*"#CODE_SIGN_IDENTITY=<redacted>#g' \
+            -e 's#CODE_SIGN_IDENTITY *= *[^"]*$#CODE_SIGN_IDENTITY=<redacted>#g' \
+            -e 's#PRODUCT_BUNDLE_IDENTIFIER *= *[^ ")]*#PRODUCT_BUNDLE_IDENTIFIER=<redacted>#g' \
+            -e 's#PROVISIONING_PROFILE_SPECIFIER *= *[^ ")]*#PROVISIONING_PROFILE_SPECIFIER=<redacted>#g' \
             -e 's#PROVISIONING_PROFILE[^ =]*=[^ " )]*#PROVISIONING_PROFILE=<redacted>#g' \
             -e 's#DEVELOPMENT_TEAM *= *[^ " )]*#DEVELOPMENT_TEAM=<redacted>#g')"
 
@@ -530,26 +531,34 @@ jobs:
           if [ -z "$version" ]; then version='unknown'; fi
 
           deploy_error=''
-          if [ -n "${DEPLOY_ERROR_DETAIL:-}" ]; then
-            deploy_error="$(printf '%s' "$DEPLOY_ERROR_DETAIL" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-200)"
-          elif [ -f deploy.log ]; then
+          if [ -f deploy.log ]; then
             deploy_error="$(grep -E '^\[!\]' deploy.log || true)"
+            if [ -z "$deploy_error" ]; then
+              deploy_error="$(grep -E '(: error:|\*\* BUILD FAILED \*\*|\*\* ARCHIVE FAILED \*\*|clang: .*error:|ld: .*error:|ld: .*)' deploy.log | grep -v '^\s*$' | head -1 || true)"
+            fi
             if [ -z "$deploy_error" ]; then
               deploy_error="$(grep -iE 'error|fatal|failed|Could not|cannot|No available|Unauthorized|forbidden|timed out|refused|Invalid|not found|Connection|App Store Connect|authentication' deploy.log | grep -v '^\s*$' | tail -1 || true)"
             fi
             if [ -z "$deploy_error" ]; then
-              deploy_error="$(tail -30 deploy.log || true)"
+              deploy_error="$(head -3 deploy.log | tail -1 || true)"
             fi
 
             deploy_error="$(printf '%s' "$deploy_error" | sed -E \
               -e 's#/Users/[^ "\\]*#<path>#g' \
               -e 's#/private/var/[^ "\\]*#<path>#g' \
               -e 's#/var/folders/[^ "\\]*#<path>#g' \
+              -e 's#(^|[[:space:]])source/[^ "\\]*#\1<path>#g' \
               -e 's#[^ ":]*/source/[^ "\\]*#<path>#g' \
               -e 's#/Applications/Xcode[^ "\\]*#<xcode>#g' \
               -e 's#[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}#<uuid>#g' \
-              -e 's#(Apple|iPhone) (Development|Distribution): [^]" )]*#\1 \2: <redacted>#g' \
-              -e 's#signingCertificate *= *[^;) ]*#signingCertificate=<redacted>#g' \
+              -e 's#(Apple|iPhone) (Development|Distribution): [^"]*\)#\1 \2: <redacted>)#g' \
+              -e 's#(Apple|iPhone) (Development|Distribution): [^" )]+#\1 \2: <redacted>#g' \
+              -e 's#signingCertificate *= *"[^"]*"#signingCertificate=<redacted>#g' \
+              -e 's#signingCertificate *= *[^;)]*#signingCertificate=<redacted>#g' \
+              -e 's#CODE_SIGN_IDENTITY *= *"[^"]*"#CODE_SIGN_IDENTITY=<redacted>#g' \
+              -e 's#CODE_SIGN_IDENTITY *= *[^"]*$#CODE_SIGN_IDENTITY=<redacted>#g' \
+              -e 's#PRODUCT_BUNDLE_IDENTIFIER *= *[^ ")]*#PRODUCT_BUNDLE_IDENTIFIER=<redacted>#g' \
+              -e 's#PROVISIONING_PROFILE_SPECIFIER *= *[^ ")]*#PROVISIONING_PROFILE_SPECIFIER=<redacted>#g' \
               -e 's#PROVISIONING_PROFILE[^ =]*=[^ " )]*#PROVISIONING_PROFILE=<redacted>#g' \
               -e 's#DEVELOPMENT_TEAM *= *[^ " )]*#DEVELOPMENT_TEAM=<redacted>#g')"
             deploy_error="$(printf '%s' "$deploy_error" | tr '`' "'")"
@@ -560,6 +569,8 @@ jobs:
             if [ -n "$ASC_KEY_ID" ]; then deploy_error="${deploy_error//$ASC_KEY_ID/<asc-key-id>}"; fi
             if [ -n "$ASC_ISSUER_ID" ]; then deploy_error="${deploy_error//$ASC_ISSUER_ID/<asc-issuer-id>}"; fi
             deploy_error="$(printf '%s' "$deploy_error" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-200)"
+          elif [ -n "${DEPLOY_ERROR_DETAIL:-}" ]; then
+            deploy_error="$(printf '%s' "$DEPLOY_ERROR_DETAIL" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-200)"
           fi
 
           deploy_error="$(printf '%s' "$deploy_error" | sed 's/__DEPLOY_ERROR_EOF__/[REDACTED]/g')"
