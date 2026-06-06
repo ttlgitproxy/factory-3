@@ -112,7 +112,7 @@ jobs:
 
           delete_http_code="$(printf '%s' "$delete_response" | tail -1)"
           if [ "$delete_http_code" -lt 200 ] || [ "$delete_http_code" -ge 300 ]; then
-            echo "❌ Failed to delete dispatch state — aborting to prevent replay"
+            echo "Γ¥î Failed to delete dispatch state ΓÇö aborting to prevent replay"
             set_fallback_env
             exit 1
           fi
@@ -196,7 +196,7 @@ jobs:
           fi
 
           if [ -z "$SCM_API_BASE_URL" ] || [ -z "$SCM_API_TOKEN" ]; then
-            echo "⚠️ SCM_API_BASE_URL or SCM_API_TOKEN not configured; skipping status reporting"
+            echo "ΓÜá∩╕Å SCM_API_BASE_URL or SCM_API_TOKEN not configured; skipping status reporting"
             exit 0
           fi
 
@@ -205,7 +205,7 @@ jobs:
           http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=running" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Deploy in progress" --data-urlencode "name=deploy/proxy" 2>/dev/null)"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-            echo "⚠️ Pending status update failed with HTTP ${http_code} — continuing anyway"
+            echo "ΓÜá∩╕Å Pending status update failed with HTTP ${http_code} ΓÇö continuing anyway"
             exit 0
           fi
 
@@ -441,7 +441,7 @@ jobs:
           set -e
 
           if [ "$fastlane_exit" -ne 0 ]; then
-            echo "::warning::Fastlane beta exited with code $fastlane_exit — see deploy.log artifact"
+            echo "::warning::Fastlane beta exited with code $fastlane_exit ΓÇö see deploy.log artifact"
             if [ -f deploy.log ]; then
               line_count="$(wc -l < deploy.log)"
               echo "deploy.log: ${line_count} lines captured"
@@ -459,13 +459,80 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -euo pipefail
+          config_path="$GITHUB_WORKSPACE/.github/sanitize-patterns.json"
+          if [ ! -f "$config_path" ]; then
+            echo "Missing sanitizer config: $config_path" >&2
+            exit 1
+          fi
+          backtick_to_quote="$(jq -r '.post_processing.backtick_to_quote // true' "$config_path")"
+          max_lines="$(jq -r '.post_processing.max_lines // 60' "$config_path")"
+          max_bytes="$(jq -r '.post_processing.max_bytes // 4096' "$config_path")"
+          eof_guard_enabled="$(jq -r '.post_processing.eof_guard // true' "$config_path")"
+          eof_guard="__SANITIZED_EOF__"
+
+          apply_static_patterns() {
+            local input="$1"
+            local -a sed_args=()
+            while IFS=$'\t' read -r match replace; do
+              if [ -z "${match:-}" ]; then
+                continue
+              fi
+              sed_args+=(-e "s#${match}#${replace}#g")
+            done < <(jq -r '.static_patterns[]? | [.match, .replace] | @tsv' "$config_path")
+            if [ "${#sed_args[@]}" -eq 0 ]; then
+              printf '%s' "$input"
+            else
+              printf '%s' "$input" | sed -E "${sed_args[@]}"
+            fi
+          }
+
+          apply_dynamic_env_replacements() {
+            local input="$1"
+            local output="$input"
+            local var_name value replacement slug
+            while IFS= read -r var_name; do
+              if [ -z "${var_name:-}" ]; then
+                continue
+              fi
+              value="${!var_name:-}"
+              if [ -n "$value" ]; then
+                slug="$(printf '%s' "$var_name" | tr '[:upper:]' '[:lower:]' | tr '_' '-')"
+                replacement="<${slug}>"
+                output="${output//$value/$replacement}"
+              fi
+            done < <(jq -r '.dynamic_env_vars[]?' "$config_path")
+            printf '%s' "$output"
+          }
+
+          apply_post_processing() {
+            local input="$1"
+            local output="$input"
+            if [ "$backtick_to_quote" = 'true' ]; then
+              output="$(printf '%s' "$output" | tr '`' "'")"
+            fi
+            if [ "$eof_guard_enabled" = 'true' ]; then
+              output="${output//$eof_guard/[REDACTED]}"
+            fi
+            output="$(printf '%s' "$output" | awk -v max_lines="$max_lines" 'NR <= max_lines { print }')"
+            output="$(printf '%s' "$output" | LC_ALL=C cut -b 1-"$max_bytes")"
+            printf '%s' "$output"
+          }
+
+          sanitize_text() {
+            local input="$1"
+            local output="$input"
+            output="$(apply_static_patterns "$output")"
+            output="$(apply_dynamic_env_replacements "$output")"
+            output="$(apply_post_processing "$output")"
+            printf '%s' "$output"
+          }
 
           if [ ! -f deploy.log ]; then
             {
-              echo "DEPLOY_ERROR_DETAIL<<__DEPLOY_ERROR_DETAIL_EOF__"
+              echo "DEPLOY_ERROR_DETAIL<<${eof_guard}"
               printf '%s' 'No deploy.log found'
               echo
-              echo "__DEPLOY_ERROR_DETAIL_EOF__"
+              echo "${eof_guard}"
             } >> "$GITHUB_ENV"
             exit 0
           fi
@@ -475,39 +542,13 @@ jobs:
             extracted='Deploy failed but no specific error lines were captured'
           fi
 
-          sanitized="$(printf '%s' "$extracted" | sed -E \
-            -e 's#/Users/[^ "\\]*#<path>#g' \
-            -e 's#/private/var/[^ "\\]*#<path>#g' \
-            -e 's#/var/folders/[^ "\\]*#<path>#g' \
-            -e 's#(^|[[:space:]])source/[^ "\\]*#\1<path>#g' \
-            -e 's#[^ ":]*/source/[^ "\\]*#<path>#g' \
-            -e 's#/Applications/Xcode[^ "\\]*#<xcode>#g' \
-            -e 's#[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}#<uuid>#g' \
-            -e 's#(Apple|iPhone) (Development|Distribution): [^"]*\)#\1 \2: <redacted>)#g' \
-            -e 's#(Apple|iPhone) (Development|Distribution): [^" )]+#\1 \2: <redacted>#g' \
-            -e 's#signingCertificate *= *"[^"]*"#signingCertificate=<redacted>#g' \
-            -e 's#signingCertificate *= *[^;)]*#signingCertificate=<redacted>#g' \
-            -e 's#CODE_SIGN_IDENTITY *= *"[^"]*"#CODE_SIGN_IDENTITY=<redacted>#g' \
-            -e 's#CODE_SIGN_IDENTITY *= *[^"]*$#CODE_SIGN_IDENTITY=<redacted>#g' \
-            -e 's#PRODUCT_BUNDLE_IDENTIFIER *= *[^ ")]*#PRODUCT_BUNDLE_IDENTIFIER=<redacted>#g' \
-            -e 's#PROVISIONING_PROFILE_SPECIFIER *= *[^ ")]*#PROVISIONING_PROFILE_SPECIFIER=<redacted>#g' \
-            -e 's#PROVISIONING_PROFILE[^ =]*=[^ " )]*#PROVISIONING_PROFILE=<redacted>#g' \
-            -e 's#DEVELOPMENT_TEAM *= *[^ " )]*#DEVELOPMENT_TEAM=<redacted>#g')"
-
-          sanitized="$(printf '%s' "$sanitized" | tr '`' "'")"
-          if [ -n "$SCHEME_NAME" ]; then sanitized="${sanitized//$SCHEME_NAME/[SCHEME]}"; fi
-          if [ -n "$BUNDLE_ID" ]; then sanitized="${sanitized//$BUNDLE_ID/<bundle-id>}"; fi
-          if [ -n "$TEAM_ID" ]; then sanitized="${sanitized//$TEAM_ID/<team-id>}"; fi
-          if [ -n "$PROFILE_NAME" ]; then sanitized="${sanitized//$PROFILE_NAME/<profile>}"; fi
-          if [ -n "$ASC_KEY_ID" ]; then sanitized="${sanitized//$ASC_KEY_ID/<asc-key-id>}"; fi
-          if [ -n "$ASC_ISSUER_ID" ]; then sanitized="${sanitized//$ASC_ISSUER_ID/<asc-issuer-id>}"; fi
-          sanitized="$(printf '%s' "$sanitized" | head -60 | head -c 4096 | sed 's/__SANITIZED_EOF__/[REDACTED]/g')"
+          sanitized="$(sanitize_text "$extracted")"
 
           {
-            echo "DEPLOY_ERROR_DETAIL<<__SANITIZED_EOF__"
+            echo "DEPLOY_ERROR_DETAIL<<${eof_guard}"
             printf '%s' "$sanitized"
             echo
-            echo "__SANITIZED_EOF__"
+            echo "${eof_guard}"
           } >> "$GITHUB_ENV"
 
       - name: Extract deploy metadata
@@ -518,6 +559,74 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -euo pipefail
+          config_path="$GITHUB_WORKSPACE/.github/sanitize-patterns.json"
+          if [ ! -f "$config_path" ]; then
+            echo "Missing sanitizer config: $config_path" >&2
+            exit 1
+          fi
+          backtick_to_quote="$(jq -r '.post_processing.backtick_to_quote // true' "$config_path")"
+          max_lines="$(jq -r '.post_processing.max_lines // 60' "$config_path")"
+          max_bytes="$(jq -r '.post_processing.max_bytes // 4096' "$config_path")"
+          eof_guard_enabled="$(jq -r '.post_processing.eof_guard // true' "$config_path")"
+          eof_guard="__SANITIZED_EOF__"
+          output_eof_guard="__DEPLOY_ERROR_EOF__"
+
+          apply_static_patterns() {
+            local input="$1"
+            local -a sed_args=()
+            while IFS=$'\t' read -r match replace; do
+              if [ -z "${match:-}" ]; then
+                continue
+              fi
+              sed_args+=(-e "s#${match}#${replace}#g")
+            done < <(jq -r '.static_patterns[]? | [.match, .replace] | @tsv' "$config_path")
+            if [ "${#sed_args[@]}" -eq 0 ]; then
+              printf '%s' "$input"
+            else
+              printf '%s' "$input" | sed -E "${sed_args[@]}"
+            fi
+          }
+
+          apply_dynamic_env_replacements() {
+            local input="$1"
+            local output="$input"
+            local var_name value replacement slug
+            while IFS= read -r var_name; do
+              if [ -z "${var_name:-}" ]; then
+                continue
+              fi
+              value="${!var_name:-}"
+              if [ -n "$value" ]; then
+                slug="$(printf '%s' "$var_name" | tr '[:upper:]' '[:lower:]' | tr '_' '-')"
+                replacement="<${slug}>"
+                output="${output//$value/$replacement}"
+              fi
+            done < <(jq -r '.dynamic_env_vars[]?' "$config_path")
+            printf '%s' "$output"
+          }
+
+          apply_post_processing() {
+            local input="$1"
+            local output="$input"
+            if [ "$backtick_to_quote" = 'true' ]; then
+              output="$(printf '%s' "$output" | tr '`' "'")"
+            fi
+            if [ "$eof_guard_enabled" = 'true' ]; then
+              output="${output//$eof_guard/[REDACTED]}"
+            fi
+            output="$(printf '%s' "$output" | awk -v max_lines="$max_lines" 'NR <= max_lines { print }')"
+            output="$(printf '%s' "$output" | LC_ALL=C cut -b 1-"$max_bytes")"
+            printf '%s' "$output"
+          }
+
+          sanitize_text() {
+            local input="$1"
+            local output="$input"
+            output="$(apply_static_patterns "$output")"
+            output="$(apply_dynamic_env_replacements "$output")"
+            output="$(apply_post_processing "$output")"
+            printf '%s' "$output"
+          }
 
           build_number='unknown'
           version='unknown'
@@ -543,37 +652,14 @@ jobs:
               deploy_error="$(head -3 deploy.log | tail -1 || true)"
             fi
 
-            deploy_error="$(printf '%s' "$deploy_error" | sed -E \
-              -e 's#/Users/[^ "\\]*#<path>#g' \
-              -e 's#/private/var/[^ "\\]*#<path>#g' \
-              -e 's#/var/folders/[^ "\\]*#<path>#g' \
-              -e 's#(^|[[:space:]])source/[^ "\\]*#\1<path>#g' \
-              -e 's#[^ ":]*/source/[^ "\\]*#<path>#g' \
-              -e 's#/Applications/Xcode[^ "\\]*#<xcode>#g' \
-              -e 's#[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}#<uuid>#g' \
-              -e 's#(Apple|iPhone) (Development|Distribution): [^"]*\)#\1 \2: <redacted>)#g' \
-              -e 's#(Apple|iPhone) (Development|Distribution): [^" )]+#\1 \2: <redacted>#g' \
-              -e 's#signingCertificate *= *"[^"]*"#signingCertificate=<redacted>#g' \
-              -e 's#signingCertificate *= *[^;)]*#signingCertificate=<redacted>#g' \
-              -e 's#CODE_SIGN_IDENTITY *= *"[^"]*"#CODE_SIGN_IDENTITY=<redacted>#g' \
-              -e 's#CODE_SIGN_IDENTITY *= *[^"]*$#CODE_SIGN_IDENTITY=<redacted>#g' \
-              -e 's#PRODUCT_BUNDLE_IDENTIFIER *= *[^ ")]*#PRODUCT_BUNDLE_IDENTIFIER=<redacted>#g' \
-              -e 's#PROVISIONING_PROFILE_SPECIFIER *= *[^ ")]*#PROVISIONING_PROFILE_SPECIFIER=<redacted>#g' \
-              -e 's#PROVISIONING_PROFILE[^ =]*=[^ " )]*#PROVISIONING_PROFILE=<redacted>#g' \
-              -e 's#DEVELOPMENT_TEAM *= *[^ " )]*#DEVELOPMENT_TEAM=<redacted>#g')"
-            deploy_error="$(printf '%s' "$deploy_error" | tr '`' "'")"
-            if [ -n "$SCHEME_NAME" ]; then deploy_error="${deploy_error//$SCHEME_NAME/[SCHEME]}"; fi
-            if [ -n "$BUNDLE_ID" ]; then deploy_error="${deploy_error//$BUNDLE_ID/<bundle-id>}"; fi
-            if [ -n "$TEAM_ID" ]; then deploy_error="${deploy_error//$TEAM_ID/<team-id>}"; fi
-            if [ -n "$PROFILE_NAME" ]; then deploy_error="${deploy_error//$PROFILE_NAME/<profile>}"; fi
-            if [ -n "$ASC_KEY_ID" ]; then deploy_error="${deploy_error//$ASC_KEY_ID/<asc-key-id>}"; fi
-            if [ -n "$ASC_ISSUER_ID" ]; then deploy_error="${deploy_error//$ASC_ISSUER_ID/<asc-issuer-id>}"; fi
+            deploy_error="$(sanitize_text "$deploy_error")"
             deploy_error="$(printf '%s' "$deploy_error" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-200)"
           elif [ -n "${DEPLOY_ERROR_DETAIL:-}" ]; then
-            deploy_error="$(printf '%s' "$DEPLOY_ERROR_DETAIL" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-200)"
+            deploy_error="$(sanitize_text "$DEPLOY_ERROR_DETAIL")"
+            deploy_error="$(printf '%s' "$deploy_error" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-200)"
           fi
 
-          deploy_error="$(printf '%s' "$deploy_error" | sed 's/__DEPLOY_ERROR_EOF__/[REDACTED]/g')"
+          deploy_error="${deploy_error//$output_eof_guard/[REDACTED]}"
 
           {
             echo "BUILD_NUMBER<<__BUILD_NUMBER_EOF__"
@@ -608,17 +694,17 @@ jobs:
           fi
 
           if [ -z "$SCM_API_BASE_URL" ] || [ -z "$SCM_API_TOKEN" ]; then
-            echo "⚠️ SCM_API_BASE_URL or SCM_API_TOKEN not configured; skipping status reporting"
+            echo "ΓÜá∩╕Å SCM_API_BASE_URL or SCM_API_TOKEN not configured; skipping status reporting"
             exit 0
           fi
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
-          description="Deploy succeeded — v${VERSION} (${BUILD_NUMBER})"
+          description="Deploy succeeded ΓÇö v${VERSION} (${BUILD_NUMBER})"
           http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=success" --data-urlencode "target_url=${run_url}" --data-urlencode "description=${description}" --data-urlencode "name=deploy/proxy" 2>/dev/null)"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-            echo "⚠️ Success status update failed with HTTP ${http_code} — continuing anyway"
+            echo "ΓÜá∩╕Å Success status update failed with HTTP ${http_code} ΓÇö continuing anyway"
             exit 0
           fi
 
@@ -636,7 +722,7 @@ jobs:
           fi
 
           if [ -z "$SCM_API_BASE_URL" ] || [ -z "$SCM_API_TOKEN" ]; then
-            echo "⚠️ SCM_API_BASE_URL or SCM_API_TOKEN not configured; skipping status reporting"
+            echo "ΓÜá∩╕Å SCM_API_BASE_URL or SCM_API_TOKEN not configured; skipping status reporting"
             exit 0
           fi
 
@@ -644,12 +730,12 @@ jobs:
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
           description="Deploy failed"
           if [ -n "${DEPLOY_ERROR:-}" ]; then
-            description="Deploy failed — ${DEPLOY_ERROR:0:80}"
+            description="Deploy failed ΓÇö ${DEPLOY_ERROR:0:80}"
           fi
           http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=failed" --data-urlencode "target_url=${run_url}" --data-urlencode "description=${description}" --data-urlencode "name=deploy/proxy" 2>/dev/null)"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-            echo "⚠️ Failure status update failed with HTTP ${http_code} — continuing anyway"
+            echo "ΓÜá∩╕Å Failure status update failed with HTTP ${http_code} ΓÇö continuing anyway"
             exit 0
           fi
 
@@ -667,17 +753,17 @@ jobs:
           fi
 
           if [ -z "$SCM_API_BASE_URL" ] || [ -z "$SCM_API_TOKEN" ]; then
-            echo "⚠️ SCM_API_BASE_URL or SCM_API_TOKEN not configured; skipping status reporting"
+            echo "ΓÜá∩╕Å SCM_API_BASE_URL or SCM_API_TOKEN not configured; skipping status reporting"
             exit 0
           fi
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           if [ "${{ job.status }}" = 'success' ]; then
-            body="✅ Deploy succeeded — v${VERSION} (${BUILD_NUMBER})
+            body="Γ£à Deploy succeeded ΓÇö v${VERSION} (${BUILD_NUMBER})
 
             [View run](${run_url})"
           else
-            body="❌ Deploy to TestFlight failed
+            body="Γ¥î Deploy to TestFlight failed
 
             Error: ${DEPLOY_ERROR:-No error details captured}
 
@@ -699,7 +785,7 @@ jobs:
           http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "note=${body}" 2>/dev/null)"
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-            echo "⚠️ Commit comment failed with HTTP ${http_code} — continuing anyway"
+            echo "ΓÜá∩╕Å Commit comment failed with HTTP ${http_code} ΓÇö continuing anyway"
             exit 0
           fi
 
