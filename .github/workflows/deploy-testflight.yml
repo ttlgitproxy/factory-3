@@ -459,13 +459,64 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -euo pipefail
+          config_path="$GITHUB_WORKSPACE/.github/sanitize-patterns.json"
+          if [ ! -f "$config_path" ]; then
+            echo "Missing sanitizer config: $config_path" >&2
+            exit 1
+          fi
+          eof_guard="$(jq -r '.post_processing.eof_guard // "__SANITIZED_EOF__"' "$config_path")"
+          backtick_to_quote="$(jq -r '.post_processing.backtick_to_quote // false' "$config_path")"
+          max_lines="$(jq -r '.post_processing.max_lines // 60' "$config_path")"
+          max_bytes="$(jq -r '.post_processing.max_bytes // 4096' "$config_path")"
+
+          apply_static_patterns() {
+            local input="$1"
+            local -a sed_args=()
+            while IFS=$'\t' read -r match replace; do
+              if [ -z "${match:-}" ]; then
+                continue
+              fi
+              sed_args+=(-e "s#${match}#${replace}#g")
+            done < <(jq -r '.static_patterns[]? | [.match, .replace] | @tsv' "$config_path")
+            if [ "${#sed_args[@]}" -eq 0 ]; then
+              printf '%s' "$input"
+            else
+              printf '%s' "$input" | sed -E "${sed_args[@]}"
+            fi
+          }
+
+          apply_dynamic_env_replacements() {
+            local input="$1"
+            local output="$input"
+            while IFS=$'\t' read -r var_name replace; do
+              if [ -z "${var_name:-}" ]; then
+                continue
+              fi
+              value="${!var_name:-}"
+              if [ -n "$value" ]; then
+                output="${output//$value/$replace}"
+              fi
+            done < <(jq -r '.dynamic_env_vars[]? | [.var, .replace] | @tsv' "$config_path")
+            printf '%s' "$output"
+          }
+
+          sanitize_text() {
+            local input="$1"
+            local output="$input"
+            output="$(apply_static_patterns "$output")"
+            if [ "$backtick_to_quote" = 'true' ]; then
+              output="$(printf '%s' "$output" | tr '`' "'")"
+            fi
+            output="$(apply_dynamic_env_replacements "$output")"
+            printf '%s' "$output"
+          }
 
           if [ ! -f deploy.log ]; then
             {
-              echo "DEPLOY_ERROR_DETAIL<<__DEPLOY_ERROR_DETAIL_EOF__"
+              echo "DEPLOY_ERROR_DETAIL<<${eof_guard}"
               printf '%s' 'No deploy.log found'
               echo
-              echo "__DEPLOY_ERROR_DETAIL_EOF__"
+              echo "${eof_guard}"
             } >> "$GITHUB_ENV"
             exit 0
           fi
@@ -475,39 +526,15 @@ jobs:
             extracted='Deploy failed but no specific error lines were captured'
           fi
 
-          sanitized="$(printf '%s' "$extracted" | sed -E \
-            -e 's#/Users/[^ "\\]*#<path>#g' \
-            -e 's#/private/var/[^ "\\]*#<path>#g' \
-            -e 's#/var/folders/[^ "\\]*#<path>#g' \
-            -e 's#(^|[[:space:]])source/[^ "\\]*#\1<path>#g' \
-            -e 's#[^ ":]*/source/[^ "\\]*#<path>#g' \
-            -e 's#/Applications/Xcode[^ "\\]*#<xcode>#g' \
-            -e 's#[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}#<uuid>#g' \
-            -e 's#(Apple|iPhone) (Development|Distribution): [^"]*\)#\1 \2: <redacted>)#g' \
-            -e 's#(Apple|iPhone) (Development|Distribution): [^" )]+#\1 \2: <redacted>#g' \
-            -e 's#signingCertificate *= *"[^"]*"#signingCertificate=<redacted>#g' \
-            -e 's#signingCertificate *= *[^;)]*#signingCertificate=<redacted>#g' \
-            -e 's#CODE_SIGN_IDENTITY *= *"[^"]*"#CODE_SIGN_IDENTITY=<redacted>#g' \
-            -e 's#CODE_SIGN_IDENTITY *= *[^"]*$#CODE_SIGN_IDENTITY=<redacted>#g' \
-            -e 's#PRODUCT_BUNDLE_IDENTIFIER *= *[^ ")]*#PRODUCT_BUNDLE_IDENTIFIER=<redacted>#g' \
-            -e 's#PROVISIONING_PROFILE_SPECIFIER *= *[^ ")]*#PROVISIONING_PROFILE_SPECIFIER=<redacted>#g' \
-            -e 's#PROVISIONING_PROFILE[^ =]*=[^ " )]*#PROVISIONING_PROFILE=<redacted>#g' \
-            -e 's#DEVELOPMENT_TEAM *= *[^ " )]*#DEVELOPMENT_TEAM=<redacted>#g')"
-
-          sanitized="$(printf '%s' "$sanitized" | tr '`' "'")"
-          if [ -n "$SCHEME_NAME" ]; then sanitized="${sanitized//$SCHEME_NAME/[SCHEME]}"; fi
-          if [ -n "$BUNDLE_ID" ]; then sanitized="${sanitized//$BUNDLE_ID/<bundle-id>}"; fi
-          if [ -n "$TEAM_ID" ]; then sanitized="${sanitized//$TEAM_ID/<team-id>}"; fi
-          if [ -n "$PROFILE_NAME" ]; then sanitized="${sanitized//$PROFILE_NAME/<profile>}"; fi
-          if [ -n "$ASC_KEY_ID" ]; then sanitized="${sanitized//$ASC_KEY_ID/<asc-key-id>}"; fi
-          if [ -n "$ASC_ISSUER_ID" ]; then sanitized="${sanitized//$ASC_ISSUER_ID/<asc-issuer-id>}"; fi
-          sanitized="$(printf '%s' "$sanitized" | head -60 | head -c 4096 | sed 's/__SANITIZED_EOF__/[REDACTED]/g')"
+          sanitized="$(sanitize_text "$extracted")"
+          sanitized="${sanitized//$eof_guard/[REDACTED]}"
+          sanitized="$(printf '%s' "$sanitized" | head -n "$max_lines" | head -c "$max_bytes")"
 
           {
-            echo "DEPLOY_ERROR_DETAIL<<__SANITIZED_EOF__"
+            echo "DEPLOY_ERROR_DETAIL<<${eof_guard}"
             printf '%s' "$sanitized"
             echo
-            echo "__SANITIZED_EOF__"
+            echo "${eof_guard}"
           } >> "$GITHUB_ENV"
 
       - name: Extract deploy metadata
@@ -518,6 +545,54 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -euo pipefail
+          config_path="$GITHUB_WORKSPACE/.github/sanitize-patterns.json"
+          if [ ! -f "$config_path" ]; then
+            echo "Missing sanitizer config: $config_path" >&2
+            exit 1
+          fi
+          backtick_to_quote="$(jq -r '.post_processing.backtick_to_quote // false' "$config_path")"
+
+          apply_static_patterns() {
+            local input="$1"
+            local -a sed_args=()
+            while IFS=$'\t' read -r match replace; do
+              if [ -z "${match:-}" ]; then
+                continue
+              fi
+              sed_args+=(-e "s#${match}#${replace}#g")
+            done < <(jq -r '.static_patterns[]? | [.match, .replace] | @tsv' "$config_path")
+            if [ "${#sed_args[@]}" -eq 0 ]; then
+              printf '%s' "$input"
+            else
+              printf '%s' "$input" | sed -E "${sed_args[@]}"
+            fi
+          }
+
+          apply_dynamic_env_replacements() {
+            local input="$1"
+            local output="$input"
+            while IFS=$'\t' read -r var_name replace; do
+              if [ -z "${var_name:-}" ]; then
+                continue
+              fi
+              value="${!var_name:-}"
+              if [ -n "$value" ]; then
+                output="${output//$value/$replace}"
+              fi
+            done < <(jq -r '.dynamic_env_vars[]? | [.var, .replace] | @tsv' "$config_path")
+            printf '%s' "$output"
+          }
+
+          sanitize_text() {
+            local input="$1"
+            local output="$input"
+            output="$(apply_static_patterns "$output")"
+            if [ "$backtick_to_quote" = 'true' ]; then
+              output="$(printf '%s' "$output" | tr '`' "'")"
+            fi
+            output="$(apply_dynamic_env_replacements "$output")"
+            printf '%s' "$output"
+          }
 
           build_number='unknown'
           version='unknown'
@@ -543,31 +618,7 @@ jobs:
               deploy_error="$(head -3 deploy.log | tail -1 || true)"
             fi
 
-            deploy_error="$(printf '%s' "$deploy_error" | sed -E \
-              -e 's#/Users/[^ "\\]*#<path>#g' \
-              -e 's#/private/var/[^ "\\]*#<path>#g' \
-              -e 's#/var/folders/[^ "\\]*#<path>#g' \
-              -e 's#(^|[[:space:]])source/[^ "\\]*#\1<path>#g' \
-              -e 's#[^ ":]*/source/[^ "\\]*#<path>#g' \
-              -e 's#/Applications/Xcode[^ "\\]*#<xcode>#g' \
-              -e 's#[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}#<uuid>#g' \
-              -e 's#(Apple|iPhone) (Development|Distribution): [^"]*\)#\1 \2: <redacted>)#g' \
-              -e 's#(Apple|iPhone) (Development|Distribution): [^" )]+#\1 \2: <redacted>#g' \
-              -e 's#signingCertificate *= *"[^"]*"#signingCertificate=<redacted>#g' \
-              -e 's#signingCertificate *= *[^;)]*#signingCertificate=<redacted>#g' \
-              -e 's#CODE_SIGN_IDENTITY *= *"[^"]*"#CODE_SIGN_IDENTITY=<redacted>#g' \
-              -e 's#CODE_SIGN_IDENTITY *= *[^"]*$#CODE_SIGN_IDENTITY=<redacted>#g' \
-              -e 's#PRODUCT_BUNDLE_IDENTIFIER *= *[^ ")]*#PRODUCT_BUNDLE_IDENTIFIER=<redacted>#g' \
-              -e 's#PROVISIONING_PROFILE_SPECIFIER *= *[^ ")]*#PROVISIONING_PROFILE_SPECIFIER=<redacted>#g' \
-              -e 's#PROVISIONING_PROFILE[^ =]*=[^ " )]*#PROVISIONING_PROFILE=<redacted>#g' \
-              -e 's#DEVELOPMENT_TEAM *= *[^ " )]*#DEVELOPMENT_TEAM=<redacted>#g')"
-            deploy_error="$(printf '%s' "$deploy_error" | tr '`' "'")"
-            if [ -n "$SCHEME_NAME" ]; then deploy_error="${deploy_error//$SCHEME_NAME/[SCHEME]}"; fi
-            if [ -n "$BUNDLE_ID" ]; then deploy_error="${deploy_error//$BUNDLE_ID/<bundle-id>}"; fi
-            if [ -n "$TEAM_ID" ]; then deploy_error="${deploy_error//$TEAM_ID/<team-id>}"; fi
-            if [ -n "$PROFILE_NAME" ]; then deploy_error="${deploy_error//$PROFILE_NAME/<profile>}"; fi
-            if [ -n "$ASC_KEY_ID" ]; then deploy_error="${deploy_error//$ASC_KEY_ID/<asc-key-id>}"; fi
-            if [ -n "$ASC_ISSUER_ID" ]; then deploy_error="${deploy_error//$ASC_ISSUER_ID/<asc-issuer-id>}"; fi
+            deploy_error="$(sanitize_text "$deploy_error")"
             deploy_error="$(printf '%s' "$deploy_error" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-200)"
           elif [ -n "${DEPLOY_ERROR_DETAIL:-}" ]; then
             deploy_error="$(printf '%s' "$DEPLOY_ERROR_DETAIL" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-200)"

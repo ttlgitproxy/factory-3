@@ -1,0 +1,186 @@
+{
+  "static_patterns": [
+    {
+      "match": "/Users/[^ \"\\\\]*",
+      "replace": "<path>",
+      "comment": "Absolute macOS home-directory paths"
+    },
+    {
+      "match": "/private/var/[^ \"\\\\]*",
+      "replace": "<path>",
+      "comment": "Private temporary filesystem paths"
+    },
+    {
+      "match": "/var/folders/[^ \"\\\\]*",
+      "replace": "<path>",
+      "comment": "Runner cache and temp folder paths"
+    },
+    {
+      "match": "(^|[[:space:]])source/[^ \"\\\\]*",
+      "replace": "\\1<path>",
+      "comment": "Relative source paths"
+    },
+    {
+      "match": "[^ \":]*/source/[^ \"\\\\]*",
+      "replace": "<path>",
+      "comment": "Absolute source paths"
+    },
+    {
+      "match": "~/[^ \"\\\\]*",
+      "replace": "<path>",
+      "comment": "Tilde-based home-directory paths"
+    },
+    {
+      "match": "/Applications/Xcode[^ \"\\\\]*",
+      "replace": "<xcode>",
+      "comment": "Xcode installation paths"
+    },
+    {
+      "match": "[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}",
+      "replace": "<uuid>",
+      "comment": "UUIDs from profiles, devices, or build metadata"
+    },
+    {
+      "match": "(Apple|iPhone) (Development|Distribution): [^\"]*\\)",
+      "replace": "\\1 \\2: <redacted>)",
+      "comment": "Signing identities with parenthesized company names"
+    },
+    {
+      "match": "(Apple|iPhone) (Development|Distribution): [^\" )]+",
+      "replace": "\\1 \\2: <redacted>",
+      "comment": "Signing identities without spaces"
+    },
+    {
+      "match": "(Apple|iPhone) (Development|Distribution):.*",
+      "replace": "\\1 \\2: <redacted>",
+      "comment": "Signing identities with spaces or unexpected suffixes"
+    },
+    {
+      "match": "signingCertificate *= *\"[^\"]*\"",
+      "replace": "signingCertificate=<redacted>",
+      "comment": "Quoted signingCertificate settings"
+    },
+    {
+      "match": "signingCertificate *= *[^;)]*",
+      "replace": "signingCertificate=<redacted>",
+      "comment": "Unquoted signingCertificate settings"
+    },
+    {
+      "match": "CODE_SIGN_IDENTITY *= *\"[^\"]*\"",
+      "replace": "CODE_SIGN_IDENTITY=<redacted>",
+      "comment": "Quoted CODE_SIGN_IDENTITY settings"
+    },
+    {
+      "match": "CODE_SIGN_IDENTITY *= *[^\"]*$",
+      "replace": "CODE_SIGN_IDENTITY=<redacted>",
+      "comment": "Unquoted CODE_SIGN_IDENTITY settings"
+    },
+    {
+      "match": "EXPANDED_CODE_SIGN_IDENTITY *= *[^ \" )]*",
+      "replace": "EXPANDED_CODE_SIGN_IDENTITY=<redacted>",
+      "comment": "Expanded code sign identity hashes"
+    },
+    {
+      "match": "PRODUCT_BUNDLE_IDENTIFIER *= *[^ \" )]*",
+      "replace": "PRODUCT_BUNDLE_IDENTIFIER=<redacted>",
+      "comment": "Bundle identifiers"
+    },
+    {
+      "match": "PROVISIONING_PROFILE_SPECIFIER *= *[^ \" )]*",
+      "replace": "PROVISIONING_PROFILE_SPECIFIER=<redacted>",
+      "comment": "Provisioning profile specifiers"
+    },
+    {
+      "match": "PROVISIONING_PROFILE[^ =]*=[^ \" )]*",
+      "replace": "PROVISIONING_PROFILE=<redacted>",
+      "comment": "Provisioning profile identifiers"
+    },
+    {
+      "match": "DEVELOPMENT_TEAM *= *[^ \" )]*",
+      "replace": "DEVELOPMENT_TEAM=<redacted>",
+      "comment": "Apple developer team identifiers"
+    },
+    {
+      "match": "CODE_SIGNING_REQUIRED *= *[^ \" )]*",
+      "replace": "CODE_SIGNING_REQUIRED=<redacted>",
+      "comment": "Code signing requirement flags"
+    },
+    {
+      "match": "CODE_SIGNING_ALLOWED *= *[^ \" )]*",
+      "replace": "CODE_SIGNING_ALLOWED=<redacted>",
+      "comment": "Code signing allow flags"
+    },
+    {
+      "match": "([A-Z0-9_]*_SIGNING_[A-Z0-9_]*) *= *\"[^\"]*\"",
+      "replace": "\\1=<redacted>",
+      "comment": "Quoted build settings containing _SIGNING_"
+    },
+    {
+      "match": "([A-Z0-9_]*_SIGNING_[A-Z0-9_]*) *= *[^ \" )]*",
+      "replace": "\\1=<redacted>",
+      "comment": "Unquoted build settings containing _SIGNING_"
+    },
+    {
+      "match": "([A-Z0-9_]*_SIGN_[A-Z0-9_]*) *= *\"[^\"]*\"",
+      "replace": "\\1=<redacted>",
+      "comment": "Quoted build settings containing _SIGN_"
+    },
+    {
+      "match": "([A-Z0-9_]*_SIGN_[A-Z0-9_]*) *= *[^ \" )]*",
+      "replace": "\\1=<redacted>",
+      "comment": "Unquoted build settings containing _SIGN_"
+    },
+    {
+      "match": "(INFOPLIST_KEY_[A-Z0-9_]+) *= *\"[^\"]*\"",
+      "replace": "\\1=<redacted>",
+      "comment": "Quoted Info.plist-derived build settings"
+    },
+    {
+      "match": "(INFOPLIST_KEY_[A-Z0-9_]+) *= *[^ \" )]*",
+      "replace": "\\1=<redacted>",
+      "comment": "Unquoted Info.plist-derived build settings"
+    },
+    {
+      "match": "MARKETING_VERSION *= *[^ \" )]*",
+      "replace": "MARKETING_VERSION=<redacted>",
+      "comment": "Marketing version values"
+    },
+    {
+      "match": "CURRENT_PROJECT_VERSION *= *[^ \" )]*",
+      "replace": "CURRENT_PROJECT_VERSION=<redacted>",
+      "comment": "Build number values"
+    }
+  ],
+  "dynamic_env_vars": [
+    {
+      "var": "SCHEME_NAME",
+      "replace": "[SCHEME]"
+    },
+    {
+      "var": "BUNDLE_ID",
+      "replace": "<bundle-id>"
+    },
+    {
+      "var": "TEAM_ID",
+      "replace": "<team-id>"
+    },
+    {
+      "var": "PROFILE_NAME",
+      "replace": "<profile>"
+    },
+    {
+      "var": "ASC_KEY_ID",
+      "replace": "<asc-key-id>"
+    },
+    {
+      "var": "ASC_ISSUER_ID",
+      "replace": "<asc-issuer-id>"
+    }
+  ],
+  "post_processing": {
+    "backtick_to_quote": true,
+    "max_lines": 60,
+    "max_bytes": 4096,
+    "eof_guard": "__SANITIZED_EOF__"
+  }
+}
