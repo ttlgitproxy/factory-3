@@ -16,9 +16,9 @@
       "comment": "Runner cache and temp folder paths"
     },
     {
-      "match": "(^|[[:space:]])source/[^ \"\\\\]*",
+      "match": "(^|[^/[:alnum:]])source/[^ \"\\\\]*",
       "replace": "\\1<path>",
-      "comment": "Relative source checkout paths"
+      "comment": "Relative source checkout paths (any non-path/non-word delimiter)"
     },
     {
       "match": "[^ \":]*/source/[^ \"\\\\]*",
