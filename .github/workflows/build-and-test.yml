@@ -351,10 +351,14 @@ jobs:
             exit 0
           fi
 
-          if [ "${{ job.status }}" = "success" ]; then
-            extracted="$(grep -E 'Test Suite|Test Case|passed|failed|Executed|BUILD SUCCEEDED' "$log_file" || true)"
+          # Always capture test results (pass/fail summary)
+          test_results="$(grep -E 'Test Suite|Test Case|passed|failed|Executed|BUILD SUCCEEDED|✘|✔|Test .*passed|Test .*failed|Test run with|Suite .*passed|Suite .*failed|Issue recorded' "$log_file" || true)"
+          if [ "${{ job.status }}" != "success" ]; then
+            # On failure, also capture error details
+            error_details="$(grep -E '\[!\]|error:|FAILED|fatal|Could not|BUILD FAILED|TEST FAILED|ARCHIVE FAILED|undefined symbol|linker error|linker command failed|ld:|cannot find' "$log_file" || true)"
+            extracted="$(printf '%s\n%s' "$error_details" "$test_results" | sort -u)"
           else
-            extracted="$(grep -E '\[!\]|error:|FAILED|fatal|Could not|BUILD FAILED|TEST FAILED|ARCHIVE FAILED|undefined symbol|linker error|linker command failed|ld:|cannot find|✘|Issue recorded|Test .*failed' "$log_file" || true)"
+            extracted="$test_results"
           fi
 
           if [ -z "$extracted" ]; then
