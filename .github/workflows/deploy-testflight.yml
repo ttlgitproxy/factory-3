@@ -46,7 +46,7 @@ jobs:
             if [ -n "$fallback_project_id" ] && printf '%s' "$fallback_project_id" | LC_ALL=C grep -Eq '^[0-9]+$'; then
               echo "PROJECT_ID=$fallback_project_id" >> "$GITHUB_ENV"
             fi
-            if [ -n "$fallback_sha" ] && printf '%s' "$fallback_sha" | LC_ALL=C grep -Eq '^[0-9a-f]{7,40}$'; then
+            if [ -n "$fallback_sha" ] && printf '%s' "$fallback_sha" | LC_ALL=C grep -Eq '^[0-9a-f]{40}$'; then
               echo "SHA=$fallback_sha" >> "$GITHUB_ENV"
             fi
           }
@@ -130,7 +130,7 @@ jobs:
             exit 1
           fi
 
-          if ! printf '%s' "$sha" | LC_ALL=C grep -Eq '^[0-9a-f]{7,40}$'; then
+          if ! printf '%s' "$sha" | LC_ALL=C grep -Eq '^[0-9a-f]{40}$'; then
             echo "Invalid sha format"
             set_fallback_env
             exit 1
@@ -191,6 +191,19 @@ jobs:
             git checkout --detach "$SHA" > /dev/null 2>&1
           }
 
+      - name: Summarize SCM callback target
+        run: |
+          set -euo pipefail
+          if [ -z "${PROJECT_ID:-}" ] || [ -z "${SHA:-}" ] || [ -z "${REF:-}" ]; then
+            echo "SCM callback target incomplete; project_id_present=$([ -n "${PROJECT_ID:-}" ] && echo yes || echo no) sha_present=$([ -n "${SHA:-}" ] && echo yes || echo no) ref_present=$([ -n "${REF:-}" ] && echo yes || echo no)"
+            exit 0
+          fi
+
+          echo "::add-mask::${PROJECT_ID}"
+          echo "::add-mask::${SHA:0:12}"
+          echo "::add-mask::${REF}"
+          echo "SCM callback target ready"
+
       - name: Report pending status
         env:
           SCM_API_BASE_URL: ${{ secrets.SCM_API_BASE_URL }}
@@ -198,8 +211,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "$PROJECT_ID" ]; then
-            echo "No project id provided; skipping pending status update"
+          if [ -z "$PROJECT_ID" ] || [ -z "${SHA:-}" ]; then
+            echo "No project id or sha provided; skipping pending status update"
             exit 0
           fi
 
@@ -210,12 +223,28 @@ jobs:
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=running" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Deploy in progress" --data-urlencode "name=deploy/proxy" 2>/dev/null)"
+          echo "Posting pending status update"
+          set +e
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=running" --data-urlencode "target_url=${run_url}" --data-urlencode "description=Deploy in progress" --data-urlencode "name=deploy/proxy" -o /dev/null -w '%{http_code}' 2>&1)"
+          curl_exit=$?
+          set -e
+
+          if [ "$curl_exit" -ne 0 ]; then
+            echo "ΓÜá∩╕Å Pending status update curl failed (exit ${curl_exit}) ΓÇö continuing anyway"
+            exit 0
+          fi
+
+          if ! printf '%s' "$http_code" | LC_ALL=C grep -Eq '^[0-9]{3}$'; then
+            echo "ΓÜá∩╕Å Pending status update returned invalid HTTP code '${http_code}' ΓÇö continuing anyway"
+            exit 0
+          fi
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "ΓÜá∩╕Å Pending status update failed with HTTP ${http_code} ΓÇö continuing anyway"
             exit 0
           fi
+
+          echo "Pending status update accepted (HTTP ${http_code})"
 
       - name: Select Xcode
         run: |
@@ -794,8 +823,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "$PROJECT_ID" ]; then
-            echo "No project id provided; skipping success status update"
+          if [ -z "$PROJECT_ID" ] || [ -z "${SHA:-}" ]; then
+            echo "No project id or sha provided; skipping success status update"
             exit 0
           fi
 
@@ -807,12 +836,28 @@ jobs:
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/statuses/${SHA}"
           description="Deploy succeeded ΓÇö v${VERSION} (${BUILD_NUMBER})"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=success" --data-urlencode "target_url=${run_url}" --data-urlencode "description=${description}" --data-urlencode "name=deploy/proxy" 2>/dev/null)"
+          echo "Posting success status update"
+          set +e
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=success" --data-urlencode "target_url=${run_url}" --data-urlencode "description=${description}" --data-urlencode "name=deploy/proxy" -o /dev/null -w '%{http_code}' 2>&1)"
+          curl_exit=$?
+          set -e
+
+          if [ "$curl_exit" -ne 0 ]; then
+            echo "ΓÜá∩╕Å Success status update curl failed (exit ${curl_exit}) ΓÇö continuing anyway"
+            exit 0
+          fi
+
+          if ! printf '%s' "$http_code" | LC_ALL=C grep -Eq '^[0-9]{3}$'; then
+            echo "ΓÜá∩╕Å Success status update returned invalid HTTP code '${http_code}' ΓÇö continuing anyway"
+            exit 0
+          fi
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "ΓÜá∩╕Å Success status update failed with HTTP ${http_code} ΓÇö continuing anyway"
             exit 0
           fi
+
+          echo "Success status update accepted (HTTP ${http_code})"
 
       - name: Report failure status
         if: failure()
@@ -838,12 +883,28 @@ jobs:
           if [ -n "${DEPLOY_ERROR:-}" ]; then
             description="Deploy failed ΓÇö ${DEPLOY_ERROR:0:80}"
           fi
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=failed" --data-urlencode "target_url=${run_url}" --data-urlencode "description=${description}" --data-urlencode "name=deploy/proxy" 2>/dev/null)"
+          echo "Posting failure status update"
+          set +e
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "state=failed" --data-urlencode "target_url=${run_url}" --data-urlencode "description=${description}" --data-urlencode "name=deploy/proxy" -o /dev/null -w '%{http_code}' 2>&1)"
+          curl_exit=$?
+          set -e
+
+          if [ "$curl_exit" -ne 0 ]; then
+            echo "ΓÜá∩╕Å Failure status update curl failed (exit ${curl_exit}) ΓÇö continuing anyway"
+            exit 0
+          fi
+
+          if ! printf '%s' "$http_code" | LC_ALL=C grep -Eq '^[0-9]{3}$'; then
+            echo "ΓÜá∩╕Å Failure status update returned invalid HTTP code '${http_code}' ΓÇö continuing anyway"
+            exit 0
+          fi
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "ΓÜá∩╕Å Failure status update failed with HTTP ${http_code} ΓÇö continuing anyway"
             exit 0
           fi
+
+          echo "Failure status update accepted (HTTP ${http_code})"
 
       - name: Comment on source commit
         if: always()
@@ -853,8 +914,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "$PROJECT_ID" ]; then
-            echo "No project id provided; skipping commit comment"
+          if [ -z "$PROJECT_ID" ] || [ -z "${SHA:-}" ]; then
+            echo "No project id or sha provided; skipping commit comment"
             exit 0
           fi
 
@@ -888,12 +949,28 @@ jobs:
           fi
 
           endpoint="${SCM_API_BASE_URL%/}/projects/${PROJECT_ID}/repository/commits/${SHA}/comments"
-          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -o /dev/null -w '%{http_code}' -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "note=${body}" 2>/dev/null)"
+          echo "Posting commit comment"
+          set +e
+          http_code="$(curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 30 -sS -X POST -H "PRIVATE-TOKEN: ${SCM_API_TOKEN}" "$endpoint" --data-urlencode "note=${body}" -o /dev/null -w '%{http_code}' 2>&1)"
+          curl_exit=$?
+          set -e
+
+          if [ "$curl_exit" -ne 0 ]; then
+            echo "ΓÜá∩╕Å Commit comment curl failed (exit ${curl_exit}) ΓÇö continuing anyway"
+            exit 0
+          fi
+
+          if ! printf '%s' "$http_code" | LC_ALL=C grep -Eq '^[0-9]{3}$'; then
+            echo "ΓÜá∩╕Å Commit comment returned invalid HTTP code '${http_code}' ΓÇö continuing anyway"
+            exit 0
+          fi
 
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "ΓÜá∩╕Å Commit comment failed with HTTP ${http_code} ΓÇö continuing anyway"
             exit 0
           fi
+
+          echo "Commit comment accepted (HTTP ${http_code})"
 
       - name: Clean up
         if: always()
