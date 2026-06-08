@@ -354,7 +354,7 @@ jobs:
           if [ "${{ job.status }}" = "success" ]; then
             extracted="$(grep -E 'Test Suite|Test Case|passed|failed|Executed|BUILD SUCCEEDED' "$log_file" || true)"
           else
-            extracted="$(grep -E '\[!\]|error:|FAILED|fatal|Could not|BUILD FAILED|TEST FAILED|ARCHIVE FAILED|undefined symbol|linker|cannot find' "$log_file" || true)"
+            extracted="$(grep -E '\[!\]|error:|FAILED|fatal|Could not|BUILD FAILED|TEST FAILED|ARCHIVE FAILED|undefined symbol|linker error|linker command failed|ld:|cannot find|✘|Issue recorded|Test .*failed' "$log_file" || true)"
           fi
 
           if [ -z "$extracted" ]; then
